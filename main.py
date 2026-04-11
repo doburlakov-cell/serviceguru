@@ -136,12 +136,14 @@ async def generate(data: ContractData):
 
     zip_buffer.seek(0)
 
+    from urllib.parse import quote
     filename_zip = f"Договоры_{data.company_name}_№{data.contract_number}.zip"
+    filename_encoded = quote(filename_zip, safe='')
 
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename_zip}"}
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename_encoded}"}
     )
 
 
