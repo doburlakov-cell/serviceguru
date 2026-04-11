@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ServiceGuru — Генератор договоров</title>
+  <style>
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --surface2: #20243a;
+      --border:   #2a2d3e;
+      --accent:   #4f6ef7;
+      --accent-h: #3a56e0;
+      --success:  #34d399;
+      --danger:   #f87171;
+      --text:     #e8eaf0;
+      --muted:    #6b7280;
+      --radius:   12px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 40px 20px 80px;
+    }
+    header { text-align: center; margin-bottom: 40px; }
+    .logo {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      padding: 5px 14px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
+    header h1 {
+      font-family: Georgia, serif;
+      font-size: clamp(22px, 4vw, 36px);
+      font-weight: 400;
+      margin-bottom: 8px;
+    }
+    header p { color: var(--muted); font-size: 14px; }
+
+    .contract-selector { max-width: 780px; margin: 0 auto 28px; }
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+    .contract-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .contract-option {
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      user-select: none;
+    }
+    .contract-option:hover { border-color: var(--accent); }
+    .contract-option.selected {
+      border-color: var(--accent);
+      background: rgba(79,110,247,0.08);
+    }
+    .checkmark {
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-radius: 5px;
+      flex-shrink: 0;
+      margin-top: 1px;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .contract-option.selected .checkmark {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .checkmark::after {
+      content: '✓';
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      display: none;
+    }
+    .contract-option.selected .checkmark::after { display: block; }
+    .option-text strong { display: block; font-size: 14px; margin-bottom: 3px; }
+    .option-text span { font-size: 12px; color: var(--muted); }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      max-width: 780px;
+      margin: 0 auto 20px;
+    }
+    .card-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 22px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .full { grid-column: 1 / -1; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .field input, .field select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 14px;
+      padding: 10px 13px;
+      transition: border-color 0.2s;
+      outline: none;
+    }
+    .field input:focus, .field select:focus { border-color: var(--accent); }
+    .field input::placeholder { color: var(--muted); }
+    .field select option { background: var(--surface); }
+
+    .services-block {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      margin-top: 8px;
+    }
+    .services-block .section-label { margin-bottom: 12px; color: var(--muted); }
+    .service-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 10px;
+    }
+    .btn-remove {
+      background: rgba(248,113,113,0.1);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      border-radius: 7px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+    .btn-remove:hover { background: rgba(248,113,113,0.2); }
+    .btn-add-service {
+      background: transparent;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 9px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+      margin-top: 10px;
+      transition: all 0.2s;
+    }
+    .btn-add-service:hover { border-color: var(--accent); color: var(--accent); }
+
+    .btn-wrap { max-width: 780px; margin: 0 auto; }
+    button.generate {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 600;
+      padding: 16px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+    }
+    button.generate:hover { background: var(--accent-h); }
+    button.generate:active { transform: scale(0.99); }
+    button.generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #status {
+      max-width: 780px;
+      margin: 14px auto 0;
+      padding: 13px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+    #status.success {
+      background: rgba(52,211,153,0.1);
+      border: 1px solid var(--success);
+      color: var(--success);
+      display: block;
+    }
+    #status.error {
+      background: rgba(248,113,113,0.1);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      display: block;
+    }
+
+    @media (max-width: 580px) {
+      .grid { grid-template-columns: 1fr; }
+      .service-row { grid-template-columns: 1fr 1fr; }
+      .service-row .field:first-child { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">ServiceGuru</div>
+  <h1>Генератор договоров</h1>
+  <p>Выберите нужные договоры, заполните форму — получите ZIP-архив</p>
+</header>
+
+<!-- Выбор договоров -->
+<div class="contract-selector">
+  <div class="section-label">Шаг 1 — Выберите договоры</div>
+  <div class="contract-options">
+    <div class="contract-option" id="opt-license" onclick="toggleContract('license')">
+      <div class="checkmark"></div>
+      <div class="option-text">
+        <strong>Лицензионный договор</strong>
+        <span>С приложениями №1–4</span>
+      </div>
+    </div>
+    <div class="contract-option" id="opt-services" onclick="toggleContract('services')">
+      <div class="checkmark"></div>
+      <div class="option-text">
+        <strong>Договор услуг</strong>
+        <span>Онлайн-менеджер / Внедрение</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Секция 1: Основная информация -->
+<div class="card">
+  <div class="card-title">01 — Основная информация</div>
+  <div class="grid">
+    <div class="field">
+      <label>Номер договора</label>
+      <input type="text" id="contract_number" placeholder="42" />
+    </div>
+    <div class="field">
+      <label>Дата договора</label>
+      <input type="text" id="date" placeholder="15 января 2025 г." />
+    </div>
+    <div class="field">
+      <label>ФИО менеджера</label>
+      <input type="text" id="manager_name" placeholder="Сидорова Анна Петровна" />
+    </div>
+    <div class="field">
+      <label>Email клиента</label>
+      <input type="email" id="client_email" placeholder="client@mail.ru" />
+    </div>
+  </div>
+</div>
+
+<!-- Секция 2: Данные клиента -->
+<div class="card">
+  <div class="card-title">02 — Данные клиента</div>
+  <div class="grid">
+    <div class="field full">
+      <label>Название компании</label>
+      <input type="text" id="company_name" placeholder='ООО «Ромашка»' />
+    </div>
+    <div class="field">
+      <label>ФИО клиента (инициалы)</label>
+      <input type="text" id="client_short_name" placeholder="Иванов И.И." />
+    </div>
+    <div class="field">
+      <label>ФИО генерального директора</label>
+      <input type="text" id="director_full_name" placeholder="Петров Сергей Михайлович" />
+    </div>
+    <div class="field full">
+      <label>ФИО генерального (родительный падеж)</label>
+      <input type="text" id="director_genitive" placeholder="Петрова Сергея Михайловича" />
+    </div>
+    <div class="field full">
+      <label>Юридический адрес</label>
+      <input type="text" id="legal_address" placeholder="г. Москва, ул. Ленина, д. 1" />
+    </div>
+    <div class="field full">
+      <label>Почтовый адрес</label>
+      <input type="text" id="postal_address" placeholder="г. Москва, ул. Ленина, д. 1" />
+    </div>
+  </div>
+</div>
+
+<!-- Секция 3: Реквизиты -->
+<div class="card">
+  <div class="card-title">03 — Реквизиты</div>
+  <div class="grid">
+    <div class="field">
+      <label>ОГРН</label>
+      <input type="text" id="ogrn" placeholder="1234567890123" maxlength="15" />
+    </div>
+    <div class="field">
+      <label>ИНН</label>
+      <input type="text" id="inn" placeholder="123456789" maxlength="12" />
+    </div>
+    <div class="field">
+      <label>КПП</label>
+      <input type="text" id="kpp" placeholder="123456789" maxlength="9" />
+    </div>
+    <div class="field">
+      <label>БИК</label>
+      <input type="text" id="bik" placeholder="044525225" maxlength="9" />
+    </div>
+    <div class="field full">
+      <label>Банк</label>
+      <input type="text" id="bank_name" placeholder="Сбербанк России" />
+    </div>
+    <div class="field full">
+      <label>Расчётный счёт (рубли)</label>
+      <input type="text" id="bank_account" placeholder="40702810000000000000" maxlength="20" />
+    </div>
+    <div class="field full">
+      <label>Корреспондентский счёт</label>
+      <input type="text" id="corr_account" placeholder="30101810400000000225" maxlength="20" />
+    </div>
+  </div>
+</div>
+
+<!-- Секция 4: Лицензионный (только если выбран) -->
+<div class="card" id="card-license" style="display:none;">
+  <div class="card-title">04 — Условия лицензионного договора</div>
+  <div class="grid">
+    <div class="field">
+      <label>Отчётный период (месяцев)</label>
+      <input type="number" id="report_period_num" placeholder="3" min="1" max="24" oninput="formatReportPeriod()" />
+      <input type="hidden" id="report_period" />
+    </div>
+    <div class="field">
+      <label>Количество сотрудников</label>
+      <input type="number" id="employees_count" placeholder="25" min="1" />
+    </div>
+    <div class="field full">
+      <label>Стоимость лицензии (руб.)</label>
+      <input type="text" id="license_cost" placeholder="50 000" />
+    </div>
+  </div>
+</div>
+
+<!-- Секция 5: Услуги (только если выбран) -->
+<div class="card" id="card-services" style="display:none;">
+  <div class="card-title">05 — Услуги по договору</div>
+  <div class="services-block">
+    <div class="section-label">Список услуг</div>
+    <div id="services-list"></div>
+    <button class="btn-add-service" onclick="addService()">+ Добавить услугу</button>
+  </div>
+  <div class="grid" style="margin-top:18px;">
+    <div class="field full">
+      <label>Итоговая стоимость (руб.)</label>
+      <input type="text" id="total_cost" placeholder="57 938" />
+    </div>
+  </div>
+</div>
+
+<!-- Кнопка -->
+<div class="btn-wrap">
+  <button class="generate" onclick="generateDocs()">⬇ Скачать договоры (ZIP)</button>
+</div>
+<div id="status"></div>
+
+<script>
+  // ── Выбор договоров ──────────────────────────────────────────────────────
+  const selected = { license: false, services: false };
+
+  function toggleContract(type) {
+    selected[type] = !selected[type];
+    document.getElementById('opt-' + type).classList.toggle('selected', selected[type]);
+    if (type === 'license') {
+      document.getElementById('card-license').style.display = selected[type] ? 'block' : 'none';
+    }
+    if (type === 'services') {
+      document.getElementById('card-services').style.display = selected[type] ? 'block' : 'none';
+      if (selected[type] && document.getElementById('services-list').children.length === 0) {
+        addService();
+      }
+    }
+  }
+
+  // ── Динамические услуги ──────────────────────────────────────────────────
+  let serviceCount = 0;
+
+  function addService() {
+    serviceCount++;
+    const id = serviceCount;
+    const row = document.createElement('div');
+    row.className = 'service-row';
+    row.id = 'service-row-' + id;
+    row.innerHTML = `
+      <div class="field">
+        <label>Услуга</label>
+        <select class="svc-name">
+          <option value="Онлайн менеджер">Онлайн менеджер</option>
+          <option value="Внедрение">Внедрение</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Период</label>
+        <select class="svc-period">
+          <option value="1 месяц">1 месяц</option>
+          <option value="3 месяца">3 месяца</option>
+          <option value="6 месяцев">6 месяцев</option>
+          <option value="12 месяцев">12 месяцев</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Стоимость (руб.)</label>
+        <input type="text" class="svc-cost" placeholder="57 938" oninput="calcTotal()" />
+      </div>
+      <button class="btn-remove" onclick="removeService(${id})">✕</button>
+    `;
+    document.getElementById('services-list').appendChild(row);
+  }
+
+  function removeService(id) {
+    const row = document.getElementById('service-row-' + id);
+    if (row) { row.remove(); calcTotal(); }
+  }
+
+  function calcTotal() {
+    const costs = [...document.querySelectorAll('.svc-cost')]
+      .map(el => parseFloat(el.value.replace(/\s/g, '').replace(',', '.')) || 0);
+    const total = costs.reduce((a, b) => a + b, 0);
+    if (total > 0) document.getElementById('total_cost').value = total.toLocaleString('ru-RU');
+  }
+
+  function formatReportPeriod() {
+    const n = parseInt(document.getElementById('report_period_num').value) || 0;
+    const lastTwo = n % 100;
+    const lastOne = n % 10;
+    let word;
+    if (lastTwo >= 11 && lastTwo <= 19) word = 'месяцев';
+    else if (lastOne === 1) word = 'месяц';
+    else if (lastOne >= 2 && lastOne <= 4) word = 'месяца';
+    else word = 'месяцев';
+    document.getElementById('report_period').value = n ? `${n} ${word}` : '';
+  }
+
+  // ── Генерация — отправка на сервер ───────────────────────────────────────
+  async function generateDocs() {
+    if (!selected.license && !selected.services) {
+      showStatus('Выберите хотя бы один договор', 'error');
+      return;
+    }
+
+    const company = v('company_name');
+    const contract = v('contract_number');
+
+    if (!contract || !company) {
+      showStatus('Заполните обязательные поля: Номер договора и Название компании', 'error');
+      return;
+    }
+
+    // Собираем услуги
+    const services = [...document.querySelectorAll('.service-row')].map(row => ({
+      service_name:   row.querySelector('.svc-name').value,
+      service_period: row.querySelector('.svc-period').value,
+      service_cost:   row.querySelector('.svc-cost').value || '0',
+    }));
+
+    const payload = {
+      generate_license:  selected.license,
+      generate_services: selected.services,
+      contract_number:   contract,
+      date:              v('date'),
+      manager_name:      v('manager_name'),
+      client_email:      v('client_email'),
+      company_name:      company,
+      client_short_name: v('client_short_name'),
+      director_full_name: v('director_full_name'),
+      director_genitive:  v('director_genitive'),
+      legal_address:     v('legal_address'),
+      postal_address:    v('postal_address'),
+      ogrn:              v('ogrn'),
+      inn:               v('inn'),
+      kpp:               v('kpp'),
+      bik:               v('bik'),
+      bank_name:         v('bank_name'),
+      bank_account:      v('bank_account'),
+      corr_account:      v('corr_account'),
+      report_period:     v('report_period'),
+      employees_count:   v('employees_count'),
+      license_cost:      v('license_cost'),
+      services:          services,
+      total_cost:        v('total_cost'),
+    };
+
+    const btn = document.querySelector('.generate');
+    btn.disabled = true;
+    btn.textContent = '⏳ Формируем документы...';
+
+    try {
+      const res = await fetch('/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Ошибка сервера');
+      }
+
+      // Скачиваем ZIP
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Договоры_${company}_№${contract}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      showStatus('✓ Договоры успешно сформированы и скачаны!', 'success');
+
+    } catch (err) {
+      showStatus('Ошибка: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⬇ Скачать договоры (ZIP)';
+    }
+  }
+
+  function v(id) {
+    const el = document.getElementById(id);
+    return el ? el.value.trim() : '';
+  }
+
+  function showStatus(msg, type) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = type;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+</script>
+</body>
+</html>
