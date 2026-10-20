@@ -469,7 +469,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function login(){app.innerHTML=`<div class="card" style="max-width:340px;margin:60px auto"><h2>Вход</h2>
 <input id=pw type=password placeholder="Пароль" style="width:100%"><br><br><button id=go style="width:100%">Войти</button></div>`;
  const go=async()=>{try{await api('POST','/api/login',{password:$('#pw').value})}catch{return}main()};
- $('#go').onclick=go;$('#pw').onkeydown=e=>e.key==='Enter'&&go()}
+ $('#go').onclick=go;$('#pw').addEventListener('keydown',e=>{if(e.key==='Enter')go()})}
 async function main(){
  let accs,camps;try{[accs,camps]=await Promise.all([api('GET','/api/accounts'),api('GET','/api/campaigns')])}catch{return}
  app.innerHTML=`<div class="row" style="justify-content:space-between"><h1>Рассылка</h1><button class=sec id=out style="flex:0">Выйти</button></div>
