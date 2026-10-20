@@ -1,0 +1,5 @@
+[
+  {"name": "a1", "api_id": 12345, "api_hash": "ваш_api_hash"},
+  {"name": "a2", "api_id": 12345, "api_hash": "ваш_api_hash"},
+  {"name": "a3", "api_id": 12345, "api_hash": "ваш_api_hash"}
+]
