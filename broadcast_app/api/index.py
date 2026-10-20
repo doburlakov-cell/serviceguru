@@ -74,8 +74,12 @@ alter table targets add column if not exists message_id bigint;
 alter table targets add column if not exists read_at timestamptz;
 alter table accounts add column if not exists reads_checked_at timestamptz;
 create index if not exists targets_chat_idx on targets(chat_id);
+alter table targets add column if not exists replied_at timestamptz;
+alter table targets add column if not exists reply_checked_id bigint;
+create table if not exists account_events(
+  id serial primary key, account_id int, kind text, seconds int, at timestamptz default now());
 """
-SCHEMA_VERSION = 1   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 2   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -715,6 +719,81 @@ async def campaign_targets(cid: int, status: str | None = None, con=Depends(get_
     return [dict(r) for r in rows]
 
 
+# ---------- аналитика ----------
+AN_FROM = """
+from targets t join campaigns c on c.id=t.campaign_id
+left join chats ch on ch.account_id=t.account_id and ch.chat_id=t.chat_id
+where ($1::timestamptz is null or coalesce(t.sent_at, c.created_at) >= $1)
+and ($2::int is null or t.campaign_id=$2) and ($3::int is null or t.account_id=$3)
+"""
+AN_COUNTS = """
+count(*) filter (where t.status='sent') as sent,
+count(*) filter (where t.status='sent' and ch.kind='user') as sent_users,
+count(t.read_at) as reads,
+count(t.replied_at) as replies,
+count(*) filter (where t.status='failed') as failed,
+count(*) filter (where t.status='skipped') as skipped,
+count(*) filter (where t.status in ('pending','sending')) as queued
+"""
+AN_MEDIANS = """
+percentile_cont(0.5) within group (order by extract(epoch from (t.read_at - t.sent_at)))
+  filter (where t.read_at is not null) as read_sec,
+percentile_cont(0.5) within group (order by extract(epoch from (t.replied_at - t.sent_at)))
+  filter (where t.replied_at is not null) as reply_sec
+"""
+
+
+@app.get("/api/analytics", dependencies=[Depends(auth)])
+async def analytics(days: int = 30, campaign: int | None = None, account: int | None = None,
+                    tz: str = "Europe/Moscow", con=Depends(get_db)):
+    try:
+        ZoneInfo(tz)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Неизвестный часовой пояс")
+    since = datetime.now(timezone.utc) - timedelta(days=days) if days > 0 else None
+    a = (since, campaign, account)
+
+    async def rows(q, *extra):
+        return [dict(r) for r in await con.fetch(q, *a, *extra)]
+
+    summary = (await rows("select " + AN_COUNTS + ", " + AN_MEDIANS + " " + AN_FROM))[0]
+    by_day = await rows(
+        "select (t.sent_at at time zone $4)::date as day, " + AN_COUNTS + " " + AN_FROM +
+        " and t.sent_at is not null group by 1 order by 1", tz)
+    by_hour = await rows(
+        "select extract(hour from t.sent_at at time zone $4)::int as hour, " + AN_COUNTS + " " + AN_FROM +
+        " and t.sent_at is not null group by 1 order by 1", tz)
+    by_campaign = await rows(
+        "select c.id, c.name, c.status, count(*) as total, " + AN_COUNTS + ", " + AN_MEDIANS + " " + AN_FROM +
+        " group by c.id order by c.id desc")
+    by_account = await rows(
+        "select a.id, a.name, a.status, a.blocked_until, " + AN_COUNTS + ", " + AN_MEDIANS + " " +
+        AN_FROM.replace("from targets t", "from targets t join accounts a on a.id=t.account_id", 1) +
+        " group by a.id order by a.id")
+    events = {r["account_id"]: r for r in await con.fetch(
+        "select account_id, count(*) filter (where kind='flood_wait') as floods, "
+        "count(*) filter (where kind='peer_flood') as peer_floods from account_events "
+        "where ($1::timestamptz is null or at >= $1) group by account_id", since)}
+    for r in by_account:
+        e = events.get(r["id"])
+        r["floods"], r["peer_floods"] = (e["floods"], e["peer_floods"]) if e else (0, 0)
+    by_kind = await rows(
+        "select coalesce(ch.kind,'unknown') as kind, " + AN_COUNTS + " " + AN_FROM + " group by 1 order by 1")
+    errs = await rows(
+        "select coalesce(t.error,'—') as error, count(*) as n " + AN_FROM +
+        " and t.status='failed' group by 1 order by 2 desc limit 20")
+    contacts = {
+        "total": await con.fetchval("select count(distinct chat_id) from chats"),
+        "excluded": await con.fetchval("select count(*) from flags where skip"),
+        "accounts": await con.fetchval("select count(*) from accounts"),
+        "accounts_active": await con.fetchval("select count(*) from accounts where status='active'"),
+        "accounts_blocked": await con.fetchval(
+            "select count(*) from accounts where blocked_until > now() or status='error'"),
+    }
+    return {"summary": summary, "by_day": by_day, "by_hour": by_hour, "by_campaign": by_campaign,
+            "by_account": by_account, "by_kind": by_kind, "errors": errs, "contacts": contacts}
+
+
 # ---------- тик по cron ----------
 def in_window(c, now_utc) -> bool:
     h = now_utc.astimezone(ZoneInfo(c["tz"])).hour
@@ -750,10 +829,13 @@ async def send_batch(con, client, aid, c, n, deadline, now):
             status, stop = "pending", True
             await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
                               now + timedelta(seconds=e.seconds + 5))
+            await con.execute("insert into account_events(account_id, kind, seconds) values($1,'flood_wait',$2)",
+                              aid, e.seconds)
         except errors.PeerFloodError:
             status, stop = "pending", True
             await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
                               now + timedelta(hours=24))
+            await con.execute("insert into account_events(account_id, kind, seconds) values($1,'peer_flood',86400)", aid)
         except Exception as e:  # noqa: BLE001
             status, err = "failed", type(e).__name__
         await con.execute(
@@ -769,24 +851,50 @@ async def send_batch(con, client, aid, c, n, deadline, now):
 
 
 async def refresh_reads(con, client, acc, deadline):
-    """Раз в 10 минут сверяет отметки «прочитано» в личных диалогах с отправленными сообщениями."""
+    """Раз в 10 минут сверяет с диалогами: прочитано ли сообщение и ответил ли человек (только личные чаты)."""
     last = acc["reads_checked_at"]
     if last and datetime.now(timezone.utc) - last < timedelta(minutes=10):
         return
-    pending = await con.fetchval(
-        "select count(*) from targets t join chats c on c.account_id=t.account_id and c.chat_id=t.chat_id "
-        "where t.account_id=$1 and t.status='sent' and t.read_at is null and t.message_id is not null "
-        "and c.kind='user' and t.sent_at > now() - interval '30 days'", acc["id"])
+    rows = await con.fetch(
+        "select t.id, t.chat_id, t.message_id, t.read_at, t.replied_at, t.reply_checked_id "
+        "from targets t join chats c on c.account_id=t.account_id and c.chat_id=t.chat_id "
+        "where t.account_id=$1 and t.status='sent' and (t.read_at is null or t.replied_at is null) "
+        "and t.message_id is not null and c.kind='user' and t.sent_at > now() - interval '30 days'", acc["id"])
     await con.execute("update accounts set reads_checked_at=now() where id=$1", acc["id"])
-    if not pending:
+    if not rows:
         return
-    ro = {}
+    want = {r["chat_id"] for r in rows}
+    ro, top, ent = {}, {}, {}
     async for d in client.iter_dialogs():
-        if isinstance(d.entity, User):
-            ro[d.id] = d.dialog.read_outbox_max_id
+        if d.id in want and isinstance(d.entity, User):
+            ro[d.id], top[d.id], ent[d.id] = d.dialog.read_outbox_max_id, d.dialog.top_message, d.entity
         if time.monotonic() > deadline:
             break
-    await mark_reads(con, acc["id"], ro)
+    read_ids, replies, checked, calls = [], {}, [], 0
+    for r in rows:
+        cid, mid = r["chat_id"], r["message_id"]
+        if r["read_at"] is None and mid <= ro.get(cid, 0):
+            read_ids.append(r["id"])
+        newest = top.get(cid, 0)
+        # ответ ищем только если в диалоге появилось что-то новее нашего сообщения и мы это ещё не проверяли
+        if r["replied_at"] is None and newest > mid and newest != r["reply_checked_id"] \
+                and calls < 30 and time.monotonic() < deadline:
+            calls += 1
+            try:
+                msgs = await client.get_messages(ent[cid], min_id=mid, limit=20)
+            except Exception:  # noqa: BLE001
+                continue
+            inbound = [m.date for m in msgs if not m.out]
+            if inbound:
+                replies[r["id"]] = min(inbound)
+            else:
+                checked.append((r["id"], newest))
+    if read_ids:
+        await con.execute("update targets set read_at=now() where id=any($1)", read_ids)
+    for tid, when in replies.items():
+        await con.execute("update targets set replied_at=$2, read_at=coalesce(read_at, $2) where id=$1", tid, when)
+    if checked:
+        await con.executemany("update targets set reply_checked_id=$2 where id=$1", checked)
 
 
 async def run_account(aid, camps, deadline):
@@ -909,16 +1017,26 @@ background:linear-gradient(135deg,#5338ef,#6f4bff);box-shadow:0 10px 24px rgba(8
 .btns{display:flex;gap:8px;flex-wrap:wrap}.mut{color:rgba(23,27,46,.55);font-size:13px}
 .pill{display:inline-flex;align-items:center;border-radius:999px;padding:2px 10px;font:600 12px Manrope;background:rgba(25,40,83,.06);color:rgba(23,27,46,.65)}
 .pill.ok{background:rgba(67,180,133,.16);color:var(--success)}.pill.warn{background:rgba(241,203,127,.35);color:var(--warn)}.pill.bad{background:rgba(232,93,117,.14);color:var(--brick)}.pill.pur{background:rgba(83,56,239,.1);color:var(--purple)}
-.grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
-@media(max-width:900px){.grid{grid-template-columns:1fr}.sticky{position:static!important}}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 450px;gap:20px;align-items:start}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}.sticky{position:static!important}}
 @media(max-width:700px){.top nav{order:3;flex-basis:100%}.top #out{margin-left:auto}}
 .sticky{position:sticky;top:92px}
-.phone{width:300px;max-width:100%;margin:0 auto;border:9px solid var(--navy);border-radius:36px;overflow:hidden;background:#cfd9e3;box-shadow:0 16px 42px rgba(25,40,83,.2)}
-.ph-top{display:flex;gap:10px;align-items:center;background:#fff;padding:10px 12px;border-bottom:1px solid var(--line)}.ph-top b{display:block;font-size:14px;line-height:1.1}.ph-top small{color:#6b7480;font-size:11px}
-.ph-body{min-height:300px;padding:14px 10px;background:linear-gradient(#dfe8f0,#cfdbe6)}
-.msg{background:#fff;border-radius:4px 16px 16px 16px;padding:5px;max-width:92%;box-shadow:0 1px 2px rgba(0,0,0,.12);overflow:hidden}
-.msg img{display:block;width:100%;border-radius:11px;margin-bottom:4px}.msg .tx{padding:3px 8px;font-size:14px;word-break:break-word}
-.msg .tm{text-align:right;font-size:11px;color:#8a97a5;padding:0 8px 3px}
+.pfit{position:relative;width:100%}
+.phone{position:absolute;top:0;left:0;width:410px;height:864px;transform-origin:top left;border:10px solid #0f1730;border-radius:56px;overflow:hidden;
+background:#fff;box-shadow:0 16px 42px rgba(25,40,83,.25);font-family:-apple-system,'Segoe UI',Roboto,sans-serif}
+.screen{display:flex;flex-direction:column;height:100%}
+.sbar{display:flex;justify-content:space-between;align-items:center;padding:12px 26px 6px;background:#fff;font-size:15px;font-weight:600}
+.ph-top{display:flex;gap:10px;align-items:center;background:#fff;padding:6px 14px 10px;border-bottom:1px solid var(--line)}
+.ph-top .back{font-size:30px;line-height:1;color:#2a8ee0;margin-right:2px}.ph-top b{display:block;font-size:16px;line-height:1.15}.ph-top small{color:#8a97a5;font-size:12.5px}
+.ph-top .logo-mark.sm{width:38px;height:38px;font-size:14px}
+.ph-body{flex:1;padding:12px 10px;overflow:hidden;background:linear-gradient(160deg,#dbe7d5,#c9dcc9 40%,#cfd9ea)}
+.ph-body .day{width:max-content;margin:0 auto 10px;background:rgba(0,0,0,.28);color:#fff;border-radius:12px;padding:2px 10px;font-size:13px}
+.msg{background:#fff;border-radius:6px 18px 18px 18px;padding:4px;max-width:82%;box-shadow:0 1px 2px rgba(0,0,0,.14);overflow:hidden}
+.msg img{display:block;width:100%;max-height:340px;object-fit:cover;border-radius:14px}
+.msg .tx{padding:6px 9px 2px;font-size:16px;line-height:1.35;word-break:break-word}
+.msg .tm{text-align:right;font-size:12px;color:#8a97a5;padding:0 8px 3px}
+.ph-in{display:flex;align-items:center;gap:12px;background:#fff;border-top:1px solid var(--line);padding:10px 14px 22px;color:#8a97a5;font-size:22px}
+.ph-in .inp{flex:1;background:#f1f3f5;border-radius:20px;padding:7px 14px;font-size:16px}
 .contact{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}.contact:first-child{border-top:0}
 .contact .nm{flex:1;min-width:0}.contact .nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .modal{position:fixed;inset:0;background:rgba(25,40,83,.5);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
@@ -926,6 +1044,16 @@ background:linear-gradient(135deg,#5338ef,#6f4bff);box-shadow:0 10px 24px rgba(8
 #msg{position:fixed;top:14px;left:50%;transform:translateX(-50%);max-width:92vw;padding:11px 16px;border-radius:14px;background:var(--navy);color:#fff;display:none;z-index:99;white-space:pre-wrap;box-shadow:0 16px 42px rgba(25,40,83,.3)}#msg.bad{background:var(--danger)}
 .thumb{width:44px;height:44px;border-radius:12px;object-fit:cover;border:1px solid var(--line)}
 .login{max-width:420px;margin:60px auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:18px;padding:14px 16px;box-shadow:0 6px 18px rgba(25,40,83,.08)}
+.kpi small{display:block;color:rgba(23,27,46,.55);font-size:12.5px;font-weight:600}.kpi b{display:block;font:700 28px Rubik,sans-serif;color:var(--navy);line-height:1.2}
+.kpi i{font-style:normal;color:rgba(23,27,46,.55);font-size:12.5px}
+.bars{display:flex;gap:4px;overflow-x:auto;padding-bottom:4px}.bcol{flex:1;min-width:18px;text-align:center}
+.bgrp{display:flex;align-items:flex-end;gap:2px;height:130px;border-bottom:1px solid var(--line)}.bgrp span{flex:1;border-radius:4px 4px 0 0;min-height:0}
+.bcol small{display:block;font-size:10.5px;color:rgba(23,27,46,.5);white-space:nowrap}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:13px}.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px}
+.tblw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{padding:8px 10px;text-align:right;border-top:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}th{font:600 12px Manrope;color:rgba(23,27,46,.55);text-transform:uppercase;letter-spacing:.03em;border-top:0}
 </style></head><body><div id="msg"></div><div id="root"></div><script>
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -949,7 +1077,7 @@ function login(){$('#root').innerHTML=`<div class="login"><div style="text-align
  $('#go').onclick=go;$('#pw').addEventListener('keydown',e=>{if(e.key==='Enter')go()})}
 
 /* ---- каркас ---- */
-const TABS=[['campaigns','Рассылки'],['contacts','Контакты'],['accounts','Аккаунты'],['tests','Тест']];
+const TABS=[['campaigns','Рассылки'],['contacts','Контакты'],['analytics','Аналитика'],['accounts','Аккаунты'],['tests','Тест']];
 let tab=(()=>{try{return localStorage.getItem('tab')}catch{return null}})()||'campaigns';
 function shell(){$('#root').innerHTML=`<header><div class="top"><div class="brand"><span class="logo-mark">SG</span><div><b>Рассылка</b><small>ServiceGuru</small></div></div>
  <nav>${TABS.map(([k,t])=>`<button data-t="${k}" class="${k===tab?'on':''}">${t}</button>`).join('')}</nav>
@@ -964,8 +1092,13 @@ async function start(){shell();show(tab)}
 /* ---- предпросмотр на телефоне ---- */
 function phone(text,img,sender,name){
  const t=esc(text||'').replace(/\{name\}/g,esc(name||'Анна')).replace(/\n/g,'<br>');
- return `<div class="phone"><div class="ph-top"><span class="logo-mark sm">SG</span><div><b>${esc(sender||'ServiceGuru')}</b><small>в сети</small></div></div>
- <div class="ph-body"><div class="msg">${img?`<img src="${img}" alt="">`:''}<div class="tx" ${t?'':'style="color:#8a97a5"'}>${t||'Текст сообщения'}</div><div class="tm">12:30</div></div></div></div>`}
+ return `<div class="pfit"><div class="phone"><div class="screen"><div class="sbar"><span>9:41</span><span style="letter-spacing:2px;font-size:13px">▂▄▆ ▮▮▮</span></div>
+ <div class="ph-top"><span class="back">‹</span><span class="logo-mark sm">SG</span><div><b>${esc(sender||'ServiceGuru')}</b><small>был(а) недавно</small></div></div>
+ <div class="ph-body"><div class="day">Сегодня</div><div class="msg">${img?`<img src="${img}" alt="">`:''}<div class="tx" ${t?'':'style="color:#8a97a5"'}>${t||'Текст сообщения'}</div><div class="tm">12:30</div></div></div>
+ <div class="ph-in"><span>📎</span><span class="inp">Сообщение</span><span>🎤</span></div></div></div></div>`}
+function fitPhones(){$$('.pfit').forEach(w=>{const ph=w.firstElementChild,k=Math.min(1,w.clientWidth/410,(innerHeight-130)/864);
+ ph.style.transform=`scale(${k})`;ph.style.left=Math.max(0,(w.clientWidth-410*k)/2)+'px';w.style.height=(864*k)+'px'})}
+addEventListener('resize',fitPhones);
 
 /* ---- рассылки ---- */
 async function campaignsView(){
@@ -997,7 +1130,7 @@ async function campaignsView(){
  <div class="btns" style="margin-top:16px"><button class="btn sec" id="ct2">Тест</button><button class="btn" id="cc">Создать (на паузе)</button><button class="btn sec" id="cs">Запланировать рассылку</button></div>
  <p class="mut">«Тест» отправляет это сообщение тестовым получателям (${tests.length} в списке, вкладка «Тест»). Запуск и планирование открываются после успешного теста.</p></div></div>
  <div class="sticky"><div class="card"><h2>Как увидит получатель</h2><div id="pv"></div><label>Имя в примере</label><input id="pn" value="Анна"></div></div></div>`;
- let img=null;const upd=()=>{$('#pv').innerHTML=phone($('#ct').value,img,(act[0]||{}).name,$('#pn').value)};
+ let img=null;const upd=()=>{$('#pv').innerHTML=phone($('#ct').value,img,(act[0]||{}).name,$('#pn').value);fitPhones()};
  $('#ct').oninput=upd;$('#pn').oninput=upd;upd();
  $('#cf').onchange=e=>{const f=e.target.files[0];if(!f){img=null;return upd()}if(f.size>4e6){note('Фото больше 4 МБ',1);e.target.value='';img=null;return upd()}img=URL.createObjectURL(f);upd()};
  let up=null;
@@ -1022,7 +1155,7 @@ function schedC(id,tz){pickTime(tz,async when=>{await api('POST',`/api/campaigns
 function showTest(r){modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>':`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
  <div class="btns" style="margin-top:14px"><button class="btn" onclick="this.closest('.modal').remove()">Готово</button></div>`)}
 async function prevC(id){const c=(await api('GET','/api/campaigns')).find(x=>x.id===id);
- modal(phone(c.text,c.media_id?'/api/media/'+c.media_id:null,'ServiceGuru','Анна')+'<div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest(\'.modal\').remove()">Закрыть</button></div>')}
+ modal(phone(c.text,c.media_id?'/api/media/'+c.media_id:null,'ServiceGuru','Анна')+'<div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest(\'.modal\').remove()">Закрыть</button></div>');fitPhones()}
 async function testC(id,b){b.disabled=true;b.textContent='Отправка…';try{showTest(await api('POST',`/api/campaigns/${id}/test`))}catch{}finally{campaignsView()}}
 async function st(id,s){try{await api('POST',`/api/campaigns/${id}/status`,{status:s})}catch{}campaignsView()}
 async function delC(id){if(confirm('Удалить рассылку?')){await api('DELETE','/api/campaigns/'+id);campaignsView()}}
@@ -1088,6 +1221,58 @@ async function code(id){const c=prompt('Код из Telegram');if(!c)return;cons
 async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced+(r.reads?', новых прочтений: '+r.reads:''))}catch{}accountsView()}
 async function delA(id){if(confirm('Удалить аккаунт?')){await api('DELETE','/api/accounts/'+id);accountsView()}}
 
+/* ---- аналитика ---- */
+const AF={days:'30',campaign:'',account:''};
+const pc=(a,b)=>b?(Math.round(a/b*1000)/10)+'%':'—';
+const dur=s=>{if(s==null)return '—';s=+s;return s<60?Math.round(s)+' сек':s<3600?Math.round(s/60)+' мин':s<86400?(Math.round(s/360)/10)+' ч':(Math.round(s/8640)/10)+' дн'};
+const ERR={PeerNotSynced:'Чат не синхронизирован',ChatWriteForbiddenError:'Нет права писать в чат',UserIsBlockedError:'Пользователь заблокировал аккаунт',UserPrivacyRestrictedError:'Настройки приватности запрещают писать',
+ InputUserDeactivatedError:'Аккаунт получателя удалён',PeerIdInvalidError:'Неверный адрес получателя',ChatAdminRequiredError:'Нужны права администратора',UserBannedInChannelError:'Аккаунт забанен в чате',
+ SlowModeWaitError:'В чате включён медленный режим',MessageTooLongError:'Слишком длинный текст',MediaEmptyError:'Не удалось отправить фото',ValueError:'Не найден получатель',TimeoutError:'Нет ответа от Telegram'};
+const KIND_RU={user:'Личные',group:'Группы',supergroup:'Супергруппы',channel:'Каналы',unknown:'Неизвестно'};
+function barChart(items,labelOf,tipOf){const max=Math.max(1,...items.map(i=>i.sent));
+ return `<div class="bars">${items.map(i=>`<div class="bcol" title="${esc(tipOf(i))}"><div class="bgrp"><span style="height:${i.sent/max*100}%;background:var(--purple)"></span><span style="height:${i.reads/max*100}%;background:var(--cyan)"></span><span style="height:${i.replies/max*100}%;background:var(--green)"></span></div><small>${labelOf(i)}</small></div>`).join('')}</div>`}
+async function analyticsView(){
+ const [accs,camps]=await Promise.all([api('GET','/api/accounts'),api('GET','/api/campaigns')]);
+ const p=new URLSearchParams({days:AF.days});if(AF.campaign)p.set('campaign',AF.campaign);if(AF.account)p.set('account',AF.account);
+ const d=await api('GET','/api/analytics?'+p);const s=d.summary,c=d.contacts;
+ const sel=(id,label,opts,cur)=>`<div><label style="margin-top:0">${label}</label><select id="${id}">${opts.map(([v,t])=>`<option value="${v}" ${String(cur)===String(v)?'selected':''}>${esc(t)}</option>`).join('')}</select></div>`;
+ const byDay={};d.by_day.forEach(r=>byDay[r.day]=r);const days=[];
+ const n=AF.days==='0'?Math.min(90,Math.max(7,d.by_day.length?Math.round((Date.now()-new Date(d.by_day[0].day))/864e5)+1:7)):Math.min(+AF.days,90);
+ for(let i=n-1;i>=0;i--){const k=new Date(Date.now()-i*864e5).toLocaleDateString('sv-SE',{timeZone:'Europe/Moscow'});days.push(byDay[k]||{day:k,sent:0,reads:0,replies:0})}
+ const hours=[...Array(24).keys()].map(h=>d.by_hour.find(r=>r.hour===h)||{hour:h,sent:0,reads:0,replies:0});
+ const kpi=(t,v,sub)=>`<div class="kpi"><small>${t}</small><b>${v}</b><i>${sub||'&nbsp;'}</i></div>`;
+ const attempts=s.sent+s.failed;
+ $('#view').innerHTML=`<div class="card"><h2>Аналитика</h2><div class="row">
+  ${sel('an-d','Период',[['7','7 дней'],['30','30 дней'],['90','90 дней'],['0','За всё время']],AF.days)}
+  ${sel('an-c','Рассылка',[['','Все рассылки'],...camps.map(x=>[x.id,x.name])],AF.campaign)}
+  ${sel('an-a','Аккаунт',[['','Все аккаунты'],...accs.map(x=>[x.id,x.name])],AF.account)}</div>
+  <p class="mut" style="margin-bottom:0">«Доставлено» — сообщения, принятые Telegram (отдельного подтверждения доставки Telegram не присылает). Прочтение и ответы определяются только в личных чатах и обновляются раз в ~10 минут, поэтому время до прочтения приблизительное.</p></div>
+ <div class="kpis">
+  ${kpi('Доставлено',s.sent,'сообщений')}
+  ${kpi('Прочитано',s.reads,pc(s.reads,s.sent_users)+' от личных')}
+  ${kpi('Ответили',s.replies,pc(s.replies,s.sent_users)+' от личных')}
+  ${kpi('Ошибки',s.failed,pc(s.failed,attempts)+' от попыток')}
+  ${kpi('В очереди',s.queued,'ждут отправки')}
+  ${kpi('Пропущено',s.skipped,'исключены из рассылки')}
+  ${kpi('До прочтения',dur(s.read_sec),'медиана')}
+  ${kpi('До ответа',dur(s.reply_sec),'медиана')}
+  ${kpi('Контактов в базе',c.total,c.excluded+' исключено')}
+  ${kpi('Аккаунтов',c.accounts,c.accounts_active+' активны · '+c.accounts_blocked+' на паузе/с ошибкой')}</div>
+ <div class="card"><h2>По дням</h2><div class="legend"><span><i style="background:var(--purple)"></i>Доставлено</span><span><i style="background:var(--cyan)"></i>Прочитано</span><span><i style="background:var(--green)"></i>Ответили</span></div>
+  ${barChart(days,i=>i.day.slice(8)+'.'+i.day.slice(5,7),i=>`${i.day}: доставлено ${i.sent}, прочитано ${i.reads}, ответили ${i.replies}`)}</div>
+ <div class="card"><h2>По часам отправки</h2><p class="mut">В какой час отправки чаще читают и отвечают (часовой пояс Москвы).</p>
+  ${barChart(hours,i=>i.hour,i=>`${i.hour}:00 — доставлено ${i.sent}, прочитано ${i.reads}, ответили ${i.replies}`)}</div>
+ <div class="card"><h2>По рассылкам</h2><div class="tblw"><table><tr><th>Рассылка</th><th>Статус</th><th>Получателей</th><th>Доставлено</th><th>Прочитано</th><th>Ответили</th><th>Ошибки</th><th>Пропущено</th><th>В очереди</th><th>До прочтения</th><th>До ответа</th></tr>
+  ${d.by_campaign.map(r=>`<tr><td>${esc(r.name)}</td><td>${(stMap[r.status]||[r.status])[0]}</td><td>${r.total}</td><td>${r.sent}</td><td>${r.reads} <span class="mut">${pc(r.reads,r.sent_users)}</span></td><td>${r.replies} <span class="mut">${pc(r.replies,r.sent_users)}</span></td><td>${r.failed}</td><td>${r.skipped}</td><td>${r.queued}</td><td>${dur(r.read_sec)}</td><td>${dur(r.reply_sec)}</td></tr>`).join('')||'<tr><td colspan="11" class="mut">Данных пока нет</td></tr>'}</table></div></div>
+ <div class="card"><h2>По аккаунтам</h2><div class="tblw"><table><tr><th>Аккаунт</th><th>Статус</th><th>Доставлено</th><th>Прочитано</th><th>Ответили</th><th>Ошибки</th><th>Пауз Telegram</th><th>Блокировок на 24 ч</th></tr>
+  ${d.by_account.map(r=>`<tr><td>${esc(r.name)}</td><td>${(stMap[r.status]||[r.status])[0]}${r.blocked_until&&new Date(r.blocked_until)>new Date()?' · пауза до '+new Date(r.blocked_until).toLocaleString('ru'):''}</td><td>${r.sent}</td><td>${r.reads} <span class="mut">${pc(r.reads,r.sent_users)}</span></td><td>${r.replies} <span class="mut">${pc(r.replies,r.sent_users)}</span></td><td>${r.failed}</td><td>${r.floods}</td><td>${r.peer_floods}</td></tr>`).join('')||'<tr><td colspan="8" class="mut">Данных пока нет</td></tr>'}</table></div></div>
+ <div class="card"><h2>По типам чатов</h2><div class="tblw"><table><tr><th>Тип</th><th>Доставлено</th><th>Прочитано</th><th>Ответили</th><th>Ошибки</th><th>Пропущено</th></tr>
+  ${d.by_kind.map(r=>`<tr><td>${KIND_RU[r.kind]||r.kind}</td><td>${r.sent}</td><td>${r.kind==='user'?r.reads:'—'}</td><td>${r.kind==='user'?r.replies:'—'}</td><td>${r.failed}</td><td>${r.skipped}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">Данных пока нет</td></tr>'}</table></div></div>
+ <div class="card"><h2>Ошибки</h2><div class="tblw"><table><tr><th>Причина</th><th>Код</th><th>Сколько</th></tr>
+  ${d.errors.map(r=>`<tr><td>${esc(ERR[r.error]||'Другая ошибка')}</td><td class="mut">${esc(r.error)}</td><td>${r.n}</td></tr>`).join('')||'<tr><td colspan="3" class="mut">Ошибок нет</td></tr>'}</table></div></div>`;
+ const re=()=>{AF.days=$('#an-d').value;AF.campaign=$('#an-c').value;AF.account=$('#an-a').value;analyticsView()};
+ ['an-d','an-c','an-a'].forEach(id=>$('#'+id).addEventListener('change',re))}
+
 /* ---- тест ---- */
 async function testsView(){const t=await api('GET','/api/test-recipients');
  $('#view').innerHTML=`<div class="card"><h2>Тестовые получатели</h2><p class="mut">Тест из рассылки уходит только им. Нужно отправить хотя бы один успешный тест, прежде чем запускать рассылку. Получателей может быть сколько угодно.</p>
@@ -1099,7 +1284,7 @@ async function testsView(){const t=await api('GET','/api/test-recipients');
  $('#ta').onclick=async()=>{try{await api('POST','/api/test-recipients',{label:$('#tl').value,target:$('#tt').value});testsView()}catch{}}}
 async function delT(id){await api('DELETE','/api/test-recipients/'+id);testsView()}
 
-const VIEWS={campaigns:campaignsView,contacts:contactsView,accounts:accountsView,tests:testsView};
+const VIEWS={campaigns:campaignsView,contacts:contactsView,analytics:analyticsView,accounts:accountsView,tests:testsView};
 api('GET','/api/me').then(start).catch(e=>{if(e!==0)login()});
 </script></body></html>"""
 
