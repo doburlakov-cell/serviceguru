@@ -34,7 +34,10 @@ async def strip_entry_prefix(request: Request, call_next):
     return await call_next(request)
 
 
-TICK_BUDGET = 48          # секунд на один тик (лимит функции 60)
+TICK_BUDGET = 55          # секунд на один тик (лимит функции 60)
+SEND_BUDGET = 40          # из них на отправку рассылок; остальное — входящие, ответы, прочтение
+INBOX_EVERY = 100         # не чаще раза в N секунд проверяем входящие аккаунта
+NEEDS_WINDOW = timedelta(hours=24)
 COOKIE = "bc_auth"
 COOKIE_TTL = 7 * 24 * 3600
 MAX_IMAGE = 4_000_000     # лимит тела запроса на Vercel около 4.5 МБ
@@ -78,8 +81,19 @@ alter table targets add column if not exists replied_at timestamptz;
 alter table targets add column if not exists reply_checked_id bigint;
 create table if not exists account_events(
   id serial primary key, account_id int, kind text, seconds int, at timestamptz default now());
+alter table accounts add column if not exists inbox_checked_at timestamptz;
+create table if not exists messages(
+  id serial primary key, account_id int references accounts(id) on delete cascade, chat_id bigint,
+  tg_id bigint, out boolean, text text, kind text default 'text', date timestamptz default now(),
+  status text default 'sent', error text, campaign_id int, media_id int);
+create unique index if not exists messages_uq on messages(account_id, chat_id, tg_id);
+create index if not exists messages_chat_idx on messages(account_id, chat_id, date);
+create table if not exists conversations(
+  account_id int references accounts(id) on delete cascade, chat_id bigint,
+  unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
+  primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 2   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 3   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -719,6 +733,256 @@ async def campaign_targets(cid: int, status: str | None = None, con=Depends(get_
     return [dict(r) for r in rows]
 
 
+# ---------- чат (мессенджер) ----------
+def msg_kind(m) -> str:
+    if getattr(m, "photo", None):
+        return "photo"
+    if getattr(m, "sticker", None):
+        return "sticker"
+    if getattr(m, "voice", None) or getattr(m, "audio", None):
+        return "voice"
+    if getattr(m, "video", None) or getattr(m, "video_note", None) or getattr(m, "gif", None):
+        return "video"
+    if getattr(m, "media", None):
+        return "file"
+    return "text"
+
+
+async def mark_needs(con, aid, cid, inbound):
+    """Входящие в течение суток после нашего сообщения из рассылки попадают в «Требуют ответа»."""
+    if not inbound:
+        return
+    last_sent = await con.fetchval(
+        "select max(sent_at) from targets where account_id=$1 and chat_id=$2 and status='sent'", aid, cid)
+    if not last_sent:
+        return
+    fresh = [d for d in inbound if last_sent <= d <= last_sent + NEEDS_WINDOW]
+    if not fresh:
+        return
+    newest = max(fresh)
+    cur = await con.fetchrow(
+        "select needs_reply, triage_at from conversations where account_id=$1 and chat_id=$2", aid, cid)
+    if cur and cur["needs_reply"] in ("pending", "yes"):
+        await con.execute("update conversations set needs_since=greatest(coalesce(needs_since,$3),$3) "
+                          "where account_id=$1 and chat_id=$2", aid, cid, newest)
+        return
+    if cur and cur["triage_at"] and newest <= cur["triage_at"]:
+        return   # на эти сообщения решение уже принято
+    await con.execute(
+        "insert into conversations(account_id, chat_id, needs_reply, needs_since) values($1,$2,'pending',$3) "
+        "on conflict(account_id, chat_id) do update set needs_reply='pending', needs_since=excluded.needs_since",
+        aid, cid, newest)
+
+
+async def store_messages(con, aid, cid, msgs):
+    rows = [(aid, cid, m.id, bool(m.out), m.message or "", msg_kind(m), m.date)
+            for m in msgs if not getattr(m, "action", None)]
+    if not rows:
+        return 0
+    await con.executemany(
+        "insert into messages(account_id, chat_id, tg_id, out, text, kind, date) values($1,$2,$3,$4,$5,$6,$7) "
+        "on conflict(account_id, chat_id, tg_id) do update set text=excluded.text, kind=excluded.kind", rows)
+    await mark_needs(con, aid, cid, [r[6] for r in rows if not r[3]])
+    return len(rows)
+
+
+async def flush_outbox(con, client, acc, deadline):
+    """Отправляет ответы из платформы, которые не ушли сразу из-за занятого аккаунта."""
+    for m in await con.fetch(
+            "select id, chat_id, text, media_id from messages where account_id=$1 and out and status='queued' "
+            "order by id limit 10", acc["id"]):
+        if time.monotonic() > deadline:
+            break
+        try:
+            row = await con.fetchrow(
+                "select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2", acc["id"], m["chat_id"])
+            media = await con.fetchrow("select filename, data from media where id=$1", m["media_id"]) \
+                if m["media_id"] else None
+            tg_id = await deliver(client, peer_of(row), m["text"], media)
+            await con.execute("update messages set status='sent', tg_id=$2, date=now() where id=$1", m["id"], tg_id)
+        except Exception as e:  # noqa: BLE001
+            await con.execute("update messages set status='failed', error=$2 where id=$1", m["id"], type(e).__name__)
+        await asyncio.sleep(1)
+
+
+async def sync_inbox(con, client, acc, deadline):
+    """Подтягивает новые сообщения личных диалогов и число непрочитанных (не чаще раза в INBOX_EVERY секунд)."""
+    last = acc["inbox_checked_at"]
+    if last and (datetime.now(timezone.utc) - last).total_seconds() < INBOX_EVERY:
+        return
+    await con.execute("update accounts set inbox_checked_at=now() where id=$1", acc["id"])
+    known = {r["chat_id"]: r["m"] for r in await con.fetch(
+        "select chat_id, max(tg_id) as m from messages where account_id=$1 group by chat_id", acc["id"])}
+    mine = {r["chat_id"] for r in await con.fetch(
+        "select chat_id from chats where account_id=$1 and kind='user'", acc["id"])}
+    unread, todo = [], []
+    async for d in client.iter_dialogs(limit=80):
+        if d.id not in mine or not isinstance(d.entity, User):
+            continue
+        unread.append((acc["id"], d.id, d.unread_count or 0))
+        if (d.dialog.top_message or 0) > known.get(d.id, 0):
+            todo.append(d)
+        if time.monotonic() > deadline:
+            break
+    if unread:
+        await con.executemany(
+            "insert into conversations(account_id, chat_id, unread) values($1,$2,$3) "
+            "on conflict(account_id, chat_id) do update set unread=excluded.unread", unread)
+    for d in todo[:12]:
+        if time.monotonic() > deadline:
+            break
+        try:
+            msgs = await client.get_messages(d.entity, limit=30, min_id=known.get(d.id, 0))
+        except Exception:  # noqa: BLE001
+            continue
+        await store_messages(con, acc["id"], d.id, msgs)
+
+
+class ChatSendIn(BaseModel):
+    text: str = ""
+    media_id: int | None = None
+
+
+class NeedsIn(BaseModel):
+    decision: str   # yes — ответ требуется, no — не требуется
+
+
+@app.get("/api/inbox/summary", dependencies=[Depends(auth)])
+async def inbox_summary(con=Depends(get_db)):
+    return {
+        "needs": await con.fetchval("select count(*) from conversations where needs_reply in ('pending','yes')"),
+        "unread": await con.fetchval("select count(*) from conversations where unread > 0"),
+    }
+
+
+@app.get("/api/chats", dependencies=[Depends(auth)])
+async def chat_list(q: str | None = None, account: int | None = None, unread: bool = False,
+                    needs: bool = False, limit: int = 100, offset: int = 0, con=Depends(get_db)):
+    qq = opt(q)
+    join = "left join lateral" if qq else "join lateral"   # при поиске находим и контакты без переписки
+    rows = await con.fetch(f"""
+        select c.account_id, c.chat_id, c.title, c.username, a.name as account,
+               lm.text as last_text, lm.kind as last_kind, lm.out as last_out, lm.date as last_date,
+               coalesce(v.unread,0) as unread, v.needs_reply
+        from chats c join accounts a on a.id=c.account_id
+        {join} (select text, kind, out, date from messages m
+                where m.account_id=c.account_id and m.chat_id=c.chat_id order by date desc, id desc limit 1) lm on true
+        left join conversations v on v.account_id=c.account_id and v.chat_id=c.chat_id
+        where c.kind='user'
+          and ($1::text is null or c.title ilike '%'||$1||'%' or c.username ilike '%'||$1||'%')
+          and ($2::int is null or c.account_id=$2)
+          and (not $3::boolean or coalesce(v.unread,0) > 0)
+          and (not $4::boolean or v.needs_reply in ('pending','yes'))
+        order by lm.date desc nulls last, c.title limit $5 offset $6""",
+        qq, account, unread, needs, min(max(limit, 1), 200), max(offset, 0))
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/chats/{aid}/{cid}/messages", dependencies=[Depends(auth)])
+async def chat_messages(aid: int, cid: int, before: int | None = None, limit: int = 60, con=Depends(get_db)):
+    contact = await con.fetchrow(
+        "select c.title, c.username, a.name as account, v.needs_reply from chats c join accounts a on a.id=c.account_id "
+        "left join conversations v on v.account_id=c.account_id and v.chat_id=c.chat_id "
+        "where c.account_id=$1 and c.chat_id=$2", aid, cid)
+    if not contact:
+        raise HTTPException(404, "Контакт не найден")
+    rows = await con.fetch(
+        "select id, tg_id, out, text, kind, date, status, error, media_id from messages "
+        "where account_id=$1 and chat_id=$2 and ($3::int is null or id < $3) "
+        "order by date desc, id desc limit $4", aid, cid, before, min(max(limit, 1), 200))
+    return {"contact": dict(contact), "items": [dict(r) for r in reversed(rows)], "more": len(rows) == min(max(limit, 1), 200)}
+
+
+@app.post("/api/chats/{aid}/{cid}/sync", dependencies=[Depends(auth)])
+async def chat_sync(aid: int, cid: int, con=Depends(get_db)):
+    """Открытие диалога: подтягиваем последние сообщения и отмечаем прочитанным в Telegram."""
+    acc = await con.fetchrow("select * from accounts where id=$1 and status='active'", aid)
+    row = await con.fetchrow("select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2", aid, cid)
+    if not acc or not row:
+        raise HTTPException(404, "Диалог не найден")
+    await con.execute(
+        "insert into conversations(account_id, chat_id, unread, seen_at) values($1,$2,0,now()) "
+        "on conflict(account_id, chat_id) do update set unread=0, seen_at=now()", aid, cid)
+    if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+        return {"busy": True}       # аккаунт занят отправкой: покажем то, что есть в базе
+    async with client_for(acc) as client:
+        peer = peer_of(row)
+        n = await store_messages(con, aid, cid, await client.get_messages(peer, limit=40))
+        try:
+            await client.send_read_acknowledge(peer)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"synced": n}
+
+
+@app.post("/api/chats/{aid}/{cid}/send", dependencies=[Depends(auth)])
+async def chat_send(aid: int, cid: int, b: ChatSendIn, con=Depends(get_db)):
+    if not (b.text.strip() or b.media_id):
+        raise HTTPException(400, "Напишите сообщение или приложите фото")
+    acc = await con.fetchrow("select * from accounts where id=$1 and status='active'", aid)
+    row = await con.fetchrow("select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2", aid, cid)
+    if not acc or not row:
+        raise HTTPException(404, "Диалог не найден")
+    if b.media_id and not await con.fetchval("select 1 from media where id=$1", b.media_id):
+        raise HTTPException(400, "Фото не найдено, загрузите заново")
+    mid = await con.fetchval(
+        "insert into messages(account_id, chat_id, out, text, kind, status, media_id) "
+        "values($1,$2,true,$3,$4,'queued',$5) returning id", aid, cid, b.text.strip(),
+        "photo" if b.media_id else "text", b.media_id)
+    queued = True
+    if await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+        media = await con.fetchrow("select filename, data from media where id=$1", b.media_id) if b.media_id else None
+        try:
+            async with client_for(acc) as client:
+                tg_id = await deliver(client, peer_of(row), b.text.strip(), media)
+            await con.execute("update messages set status='sent', tg_id=$2, date=now() where id=$1", mid, tg_id)
+            queued = False
+        except Exception as e:  # noqa: BLE001
+            await con.execute("update messages set status='failed', error=$2 where id=$1", mid, type(e).__name__)
+            raise HTTPException(400, f"Не удалось отправить: {type(e).__name__}")
+    # ответ дан: диалог уходит из «Требуют ответа»
+    await con.execute(
+        "update conversations set needs_reply='done', triage_at=now() where account_id=$1 and chat_id=$2 "
+        "and needs_reply in ('pending','yes')", aid, cid)
+    return {"id": mid, "queued": queued}
+
+
+@app.get("/api/needs", dependencies=[Depends(auth)])
+async def needs_list(con=Depends(get_db)):
+    items = [dict(r) for r in await con.fetch("""
+        select v.account_id, v.chat_id, v.needs_reply, v.needs_since, c.title, c.username, a.name as account,
+               (select cm.name from targets t join campaigns cm on cm.id=t.campaign_id
+                where t.account_id=v.account_id and t.chat_id=v.chat_id and t.status='sent'
+                order by t.sent_at desc limit 1) as campaign,
+               (select max(t.sent_at) from targets t where t.account_id=v.account_id and t.chat_id=v.chat_id
+                and t.status='sent') as mailed_at
+        from conversations v join chats c on c.account_id=v.account_id and c.chat_id=v.chat_id
+        join accounts a on a.id=v.account_id
+        where v.needs_reply in ('pending','yes') order by v.needs_since""")]
+    recent = await con.fetch("""
+        select account_id, chat_id, text, kind, date from (
+          select m.account_id, m.chat_id, m.text, m.kind, m.date,
+                 row_number() over (partition by m.account_id, m.chat_id order by m.date desc) as rn
+          from messages m join conversations v on v.account_id=m.account_id and v.chat_id=m.chat_id
+          where not m.out and v.needs_reply in ('pending','yes')) q
+        where rn <= 3 order by date""")
+    for it in items:
+        it["recent"] = [dict(r) for r in recent if r["account_id"] == it["account_id"] and r["chat_id"] == it["chat_id"]]
+    return items
+
+
+@app.post("/api/needs/{aid}/{cid}", dependencies=[Depends(auth)])
+async def needs_decide(aid: int, cid: int, b: NeedsIn, con=Depends(get_db)):
+    if b.decision not in ("yes", "no"):
+        raise HTTPException(400, "yes или no")
+    res = await con.execute(
+        "update conversations set needs_reply=$3, triage_at=now() where account_id=$1 and chat_id=$2 "
+        "and needs_reply in ('pending','yes')", aid, cid, b.decision)
+    if res.endswith(" 0"):
+        raise HTTPException(404, "Диалог уже обработан")
+    return {"ok": True}
+
+
 # ---------- аналитика ----------
 AN_FROM = """
 from targets t join campaigns c on c.id=t.campaign_id
@@ -805,7 +1069,7 @@ async def send_batch(con, client, aid, c, n, deadline, now):
     """Отправляет до n сообщений рассылки с аккаунта. Возвращает (отправлено, остановить аккаунт)."""
     media = await con.fetchrow("select filename, data from media where id=$1", c["media_id"]) \
         if c["media_id"] else None
-    gap = min(60 / c["per_minute"], 42 / max(n, 1))
+    gap = min(60 / c["per_minute"], 36 / max(n, 1))
     sent = 0
     for i in range(n):
         if time.monotonic() > deadline:
@@ -843,6 +1107,10 @@ async def send_batch(con, client, aid, c, n, deadline, now):
             "sent_at=case when $2::text='sent' then now() end where id=$1", t["id"], status, err, msg_id)
         if status == "sent":
             sent += 1
+            await con.execute(
+                "insert into messages(account_id, chat_id, tg_id, out, text, kind, campaign_id, media_id) "
+                "values($1,$2,$3,true,$4,$5,$6,$7) on conflict(account_id, chat_id, tg_id) do nothing",
+                aid, t["chat_id"], msg_id, text, "photo" if media else "text", c["id"], c["media_id"])
         if stop:
             return sent, True
         if i < n - 1:
@@ -897,37 +1165,44 @@ async def refresh_reads(con, client, acc, deadline):
         await con.executemany("update targets set reply_checked_id=$2 where id=$1", checked)
 
 
-async def run_account(aid, camps, deadline):
-    """Одно задание на аккаунт: рассылки по очереди (общий лимит в минуту), затем проверка прочтения."""
+async def run_account(aid, camps, send_deadline, deadline):
+    """Одно задание на аккаунт: рассылки по очереди (общий лимит в минуту), ответы из платформы,
+    новые входящие и проверка прочтения."""
     con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
     try:
         if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
             return
         acc = await con.fetchrow("select * from accounts where id=$1", aid)
         now = datetime.now(timezone.utc)
-        if not acc or acc["status"] != "active" or (acc["blocked_until"] and acc["blocked_until"] > now):
+        if not acc or acc["status"] != "active":
             return
+        blocked = bool(acc["blocked_until"] and acc["blocked_until"] > now)
         client = client_for(acc)
         await client.connect()
         try:
             if not await client.is_user_authorized():
                 await con.execute("update accounts set status='error' where id=$1", aid)
                 return
-            left = max([c["per_minute"] for c in camps], default=0)
-            for c in camps:
-                n = min(c["per_minute"], left)
-                if c["per_day"] > 0:
-                    day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
-                    sent_today = await con.fetchval(
-                        "select count(*) from targets where campaign_id=$1 and account_id=$2 "
-                        "and status='sent' and sent_at>=$3", c["id"], aid, day_start)
-                    n = min(n, c["per_day"] - sent_today)
-                if n <= 0:
-                    continue
-                sent, stop = await send_batch(con, client, aid, c, n, deadline, now)
-                left -= sent
-                if stop:
-                    return
+            if not blocked:
+                left = max([c["per_minute"] for c in camps], default=0)
+                for c in camps:
+                    n = min(c["per_minute"], left)
+                    if c["per_day"] > 0:
+                        day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
+                        sent_today = await con.fetchval(
+                            "select count(*) from targets where campaign_id=$1 and account_id=$2 "
+                            "and status='sent' and sent_at>=$3", c["id"], aid, day_start)
+                        n = min(n, c["per_day"] - sent_today)
+                    if n <= 0:
+                        continue
+                    sent, stop = await send_batch(con, client, aid, c, n, send_deadline, now)
+                    left -= sent
+                    if stop:
+                        blocked = True
+                        break
+                if not blocked:
+                    await flush_outbox(con, client, acc, deadline)
+            await sync_inbox(con, client, acc, deadline)
             await refresh_reads(con, client, acc, deadline)
         finally:
             await client.disconnect()
@@ -947,7 +1222,8 @@ async def tick(request: Request):
         await con.execute("update campaigns set status='running' where status='scheduled' and start_at <= now()")
         await con.execute(
             "delete from media where created_at < now() - interval '1 day' "
-            "and id not in (select media_id from campaigns where media_id is not null)")
+            "and id not in (select media_id from campaigns where media_id is not null) "
+            "and id not in (select media_id from messages where media_id is not null)")
         camps = await con.fetch("select * from campaigns where status='running' order by id")
         if camps:
             # исключённые после создания рассылки контакты пропускаем
@@ -955,20 +1231,16 @@ async def tick(request: Request):
                 "update targets set status='skipped' where campaign_id=any($1) and status='pending' "
                 "and chat_id in (select chat_id from flags where skip)", [c["id"] for c in camps])
         now = datetime.now(timezone.utc)
-        deadline = time.monotonic() + TICK_BUDGET
+        start = time.monotonic()
         by_acc: dict[int, list] = {}
         for c in camps:
             if in_window(c, now):
                 for aid in c["account_ids"]:
                     by_acc.setdefault(aid, []).append(c)
-        for r in await con.fetch(
-                "select id from accounts where status='active' and "
-                "(reads_checked_at is null or reads_checked_at < now() - interval '10 minutes') and exists "
-                "(select 1 from targets t where t.account_id=accounts.id and t.status='sent' "
-                "and t.read_at is null and t.message_id is not null and t.sent_at > now() - interval '30 days')"):
-            by_acc.setdefault(r["id"], [])
-        await asyncio.gather(*[run_account(aid, cs, deadline) for aid, cs in by_acc.items()],
-                             return_exceptions=True)
+        for r in await con.fetch("select id from accounts where status='active'"):
+            by_acc.setdefault(r["id"], [])   # входящие и ответы обрабатываем у всех активных аккаунтов
+        await asyncio.gather(*[run_account(aid, cs, start + SEND_BUDGET, start + TICK_BUDGET)
+                               for aid, cs in by_acc.items()], return_exceptions=True)
         await con.execute(
             "update campaigns c set status='done' where status='running' and not exists "
             "(select 1 from targets t where t.campaign_id=c.id and t.status in ('pending','sending'))")
@@ -1044,6 +1316,32 @@ background:#fff;box-shadow:0 16px 42px rgba(25,40,83,.25);font-family:-apple-sys
 #msg{position:fixed;top:14px;left:50%;transform:translateX(-50%);max-width:92vw;padding:11px 16px;border-radius:14px;background:var(--navy);color:#fff;display:none;z-index:99;white-space:pre-wrap;box-shadow:0 16px 42px rgba(25,40,83,.3)}#msg.bad{background:var(--danger)}
 .thumb{width:44px;height:44px;border-radius:12px;object-fit:cover;border:1px solid var(--line)}
 .login{max-width:420px;margin:60px auto}
+nav .cnt{display:inline-block;min-width:18px;margin-left:6px;padding:0 6px;border-radius:999px;background:var(--danger);color:#fff;font:700 11px/18px Manrope}
+.msgr{display:grid;grid-template-columns:360px minmax(0,1fr);gap:20px;align-items:start}
+.mlist{margin:0;padding:14px}.clist{margin-top:10px;max-height:calc(100vh - 290px);overflow-y:auto}
+.chk{display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap}
+.citem{display:flex;gap:10px;padding:10px 6px;border-radius:14px;cursor:pointer;align-items:center}.citem:hover{background:var(--panel2)}.citem.on{background:rgba(83,56,239,.08)}
+.avatar{flex:none;width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font:700 15px Rubik,sans-serif;
+background:linear-gradient(135deg,#4fb3d3,#5338ef 60%,#d73ba8)}
+.cmain{flex:1;min-width:0}.cmain b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cmain>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:rgba(23,27,46,.55)}
+.cside{text-align:right;flex:none;font-size:12px;color:rgba(23,27,46,.5)}
+.badge{display:inline-block;min-width:20px;padding:0 6px;border-radius:999px;background:var(--purple);color:#fff;font:700 12px/20px Manrope;margin-top:3px}
+.device{display:flex;flex-direction:column;height:calc(100vh - 150px);min-height:520px;max-height:860px;border:10px solid #0f1730;border-radius:44px;overflow:hidden;background:#fff;box-shadow:0 16px 42px rgba(25,40,83,.25)}
+.dev-top{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);background:#fff}
+.dev-top .avatar{width:40px;height:40px;font-size:14px}.dev-name b{display:block;line-height:1.15}.dev-name small{color:#8a97a5}
+.dev-top .back{display:none;border:0;background:none;font-size:32px;line-height:1;color:#2a8ee0;cursor:pointer;padding:0 6px}
+.dev-body{flex:1;overflow-y:auto;padding:12px 14px;background:linear-gradient(160deg,#dbe7d5,#c9dcc9 40%,#cfd9ea)}
+.dev-body .day{width:max-content;margin:10px auto;background:rgba(0,0,0,.28);color:#fff;border-radius:12px;padding:2px 10px;font-size:13px}
+.b{max-width:78%;width:fit-content;margin:4px 0;padding:6px 10px 3px;border-radius:6px 18px 18px 18px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.14);word-break:break-word;font-size:15.5px}
+.b.out{margin-left:auto;background:#e4dcff;border-radius:18px 6px 18px 18px}.b .kl{font-weight:600;color:var(--purple)}
+.b .tm{text-align:right;font-size:11.5px;color:#8a97a5;margin-top:1px}
+.dev-in{display:flex;gap:10px;align-items:flex-end;padding:10px 14px 16px;border-top:1px solid var(--line);background:#fff}
+.dev-in textarea{flex:1;border-radius:20px;padding:9px 14px;resize:none;max-height:120px;background:#f1f3f5;border:0}
+.dev-in .att{cursor:pointer;font-size:22px;padding-bottom:4px}.dev-in .send{flex:none;width:42px;height:42px;border-radius:50%;border:0;color:#fff;font-size:18px;cursor:pointer;background:linear-gradient(135deg,#5338ef,#6f4bff)}
+.empty{margin:auto;color:#8a97a5;text-align:center;padding:30px}
+.need .recent{display:flex;flex-direction:column;gap:4px;margin:10px 0}.need .b{max-width:100%;margin:0}
+@media(max-width:900px){.msgr{grid-template-columns:1fr}.msgr.has-chat .mlist{display:none}.msgr:not(.has-chat) .mchat{display:none}
+ .dev-top .back{display:block}.device{height:calc(100vh - 130px);border-width:6px;border-radius:30px}.clist{max-height:none}}
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px}
 .kpi{background:#fff;border:1px solid var(--line);border-radius:18px;padding:14px 16px;box-shadow:0 6px 18px rgba(25,40,83,.08)}
 .kpi small{display:block;color:rgba(23,27,46,.55);font-size:12.5px;font-weight:600}.kpi b{display:block;font:700 28px Rubik,sans-serif;color:var(--navy);line-height:1.2}
@@ -1077,17 +1375,21 @@ function login(){$('#root').innerHTML=`<div class="login"><div style="text-align
  $('#go').onclick=go;$('#pw').addEventListener('keydown',e=>{if(e.key==='Enter')go()})}
 
 /* ---- каркас ---- */
-const TABS=[['campaigns','Рассылки'],['contacts','Контакты'],['analytics','Аналитика'],['accounts','Аккаунты'],['tests','Тест']];
+const TABS=[['campaigns','Рассылки'],['chat','Чат'],['needs','Требуют ответа'],['contacts','Контакты'],['analytics','Аналитика'],['accounts','Аккаунты'],['tests','Тест']];
 let tab=(()=>{try{return localStorage.getItem('tab')}catch{return null}})()||'campaigns';
 function shell(){$('#root').innerHTML=`<header><div class="top"><div class="brand"><span class="logo-mark">SG</span><div><b>Рассылка</b><small>ServiceGuru</small></div></div>
  <nav>${TABS.map(([k,t])=>`<button data-t="${k}" class="${k===tab?'on':''}">${t}</button>`).join('')}</nav>
  <button class="btn sec sm" id="out">Выйти</button></div></header><div class="wrap"><div id="view" style="padding-top:20px"></div></div>`;
  $$('nav button').forEach(b=>b.onclick=()=>show(b.dataset.t));
  $('#out').onclick=async()=>{await api('POST','/api/logout');login()}}
-async function show(t){tab=t;try{localStorage.setItem('tab',t)}catch{}
+async function show(t){clearTimers();tab=t;try{localStorage.setItem('tab',t)}catch{}
  $$('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
  $('#view').innerHTML='<p class="mut">Загрузка…</p>';try{await VIEWS[t]()}catch(e){if(e!==0&&e!==undefined&&!e.detail)$('#view').innerHTML='<p class="mut">Не удалось загрузить</p>'}}
-async function start(){shell();show(tab)}
+async function refreshBadges(){try{const s=await api('GET','/api/inbox/summary');
+ const set=(t,n,label)=>{const b=document.querySelector(`nav button[data-t=${t}]`);if(b)b.innerHTML=label+(n?`<span class="cnt">${n}</span>`:'')};
+ set('chat',s.unread,'Чат');set('needs',s.needs,'Требуют ответа')}catch{}}
+let BADGE_T=null;
+async function start(){shell();show(tab);refreshBadges();clearInterval(BADGE_T);BADGE_T=setInterval(refreshBadges,60000)}
 
 /* ---- предпросмотр на телефоне ---- */
 function phone(text,img,sender,name){
@@ -1221,6 +1523,70 @@ async function code(id){const c=prompt('Код из Telegram');if(!c)return;cons
 async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced+(r.reads?', новых прочтений: '+r.reads:''))}catch{}accountsView()}
 async function delA(id){if(confirm('Удалить аккаунт?')){await api('DELETE','/api/accounts/'+id);accountsView()}}
 
+/* ---- чат ---- */
+let TIMERS=[];const clearTimers=()=>{TIMERS.forEach(clearInterval);TIMERS=[]};
+let OPEN=null;const CH={q:'',account:'',unread:false};
+const ini=s=>(s||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()||'?';
+const hhmm=d=>new Date(d).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
+const dayLabel=d=>{const x=new Date(d),t=new Date(),y=new Date(Date.now()-864e5);return x.toDateString()===t.toDateString()?'Сегодня':x.toDateString()===y.toDateString()?'Вчера':x.toLocaleDateString('ru',{day:'numeric',month:'long'})};
+const KL={photo:'📷 Фото',video:'🎬 Видео',voice:'🎤 Голосовое',file:'📎 Файл',sticker:'Стикер'};
+const prev=(t,k)=>t||KL[k]||'';
+const listTime=d=>{if(!d)return '';const x=new Date(d);return x.toDateString()===new Date().toDateString()?hhmm(d):x.toLocaleDateString('ru',{day:'2-digit',month:'2-digit'})};
+function renderMsgs(items){let last='';return items.map(m=>{const day=dayLabel(m.date),sep=day!==last?`<div class="day">${day}</div>`:'';last=day;
+ const st=m.out?(m.status==='queued'?'🕓':m.status==='failed'?'❗':'✓'):'';
+ return sep+`<div class="b ${m.out?'out':'in'}">${m.kind&&m.kind!=='text'?`<div class="kl">${KL[m.kind]||''}</div>`:''}${m.text?`<div>${esc(m.text).replace(/\n/g,'<br>')}</div>`:''}<div class="tm">${hhmm(m.date)} ${st}${m.status==='failed'?' не отправлено':''}</div></div>`}).join('')}
+async function chatView(){
+ const accs=await api('GET','/api/accounts');
+ $('#view').innerHTML=`<div class="msgr ${OPEN?'has-chat':''}" id="msgr"><div class="card mlist">
+  <input id="cq" placeholder="Поиск по имени или @username" value="${esc(CH.q)}">
+  <div class="row" style="margin-top:8px;align-items:center"><select id="ca2"><option value="">Все аккаунты</option>${accs.map(a=>`<option value="${a.id}" ${String(CH.account)===String(a.id)?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+  <label class="chk"><input type="checkbox" id="cu" ${CH.unread?'checked':''}> Непрочитанные</label></div><div class="clist" id="cl2"></div></div>
+  <div class="mchat"><div class="device" id="dev"></div></div></div>`;
+ const loadList=async()=>{CH.q=$('#cq').value;CH.account=$('#ca2').value;CH.unread=$('#cu').checked;
+  const p=new URLSearchParams({q:CH.q,unread:CH.unread});if(CH.account)p.set('account',CH.account);
+  const items=await api('GET','/api/chats?'+p);
+  $('#cl2').innerHTML=items.map(c=>`<div class="citem ${OPEN&&OPEN.aid==c.account_id&&OPEN.cid==c.chat_id?'on':''}" data-a="${c.account_id}" data-c="${c.chat_id}">
+   <span class="avatar">${esc(ini(c.title))}</span><div class="cmain"><b>${esc(c.title||'(без имени)')}</b><span>${c.last_out?'Вы: ':''}${esc(prev(c.last_text,c.last_kind))||'нет сообщений'}</span><span><span class="pill">${esc(c.account)}</span>${c.needs_reply?' <span class="pill warn">нужен ответ</span>':''}</span></div>
+   <div class="cside">${listTime(c.last_date)}${c.unread?`<br><span class="badge">${c.unread}</span>`:''}</div></div>`).join('')||'<p class="mut">Диалогов пока нет. Они появятся после рассылки или синхронизации чатов.</p>'};
+ const showEmpty=()=>{$('#dev').innerHTML='<div class="empty">Выберите диалог слева</div>'};
+ const loadMsgs=async(stick)=>{if(!OPEN)return;const r=await api('GET',`/api/chats/${OPEN.aid}/${OPEN.cid}/messages`);const mb=$('#mb');if(!mb)return;
+  const near=mb.scrollHeight-mb.scrollTop-mb.clientHeight<80;mb.innerHTML=renderMsgs(r.items)||'<div class="empty">Сообщений пока нет</div>';if(stick||near)mb.scrollTop=mb.scrollHeight};
+ const syncOpen=async()=>{if(!OPEN)return;try{await api('POST',`/api/chats/${OPEN.aid}/${OPEN.cid}/sync`)}catch{};await loadMsgs();loadList();refreshBadges()};
+ const open=async(aid,cid)=>{OPEN={aid,cid};$('#msgr').classList.add('has-chat');
+  const r=await api('GET',`/api/chats/${aid}/${cid}/messages`);const c=r.contact;
+  $('#dev').innerHTML=`<div class="dev-top"><button class="back" id="cb">‹</button><span class="avatar">${esc(ini(c.title))}</span><div class="dev-name"><b>${esc(c.title)}</b><small>${c.username?'@'+esc(c.username)+' · ':''}${esc(c.account)}</small></div></div>
+   <div class="dev-body" id="mb"></div><div class="dev-in"><label class="att" title="Фото">📎<input type="file" id="mf" accept="image/jpeg,image/png,image/webp" hidden></label>
+   <textarea id="mt" rows="1" placeholder="Сообщение"></textarea><button class="send" id="ms">➤</button></div>`;
+  $('#mb').innerHTML=renderMsgs(r.items)||'<div class="empty">Сообщений пока нет</div>';$('#mb').scrollTop=$('#mb').scrollHeight;
+  $('#cb').onclick=()=>{OPEN=null;$('#msgr').classList.remove('has-chat');showEmpty();loadList()};
+  const send=async()=>{const t=$('#mt').value.trim(),f=$('#mf').files[0];if(!t&&!f)return;const b=$('#ms');b.disabled=true;
+   try{let media_id=null;if(f){const fd=new FormData();fd.append('file',f);media_id=(await api('POST','/api/media',fd,true)).id}
+    const o=await api('POST',`/api/chats/${aid}/${cid}/send`,{text:t,media_id});$('#mt').value='';$('#mf').value='';if(o.queued)note('Аккаунт занят рассылкой — ответ уйдёт в течение минуты');
+    await loadMsgs(true);loadList();refreshBadges()}catch{}finally{b.disabled=false}};
+  $('#ms').onclick=send;$('#mt').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+  $('#mf').onchange=e=>{if(e.target.files[0])note('Фото прикреплено: '+e.target.files[0].name)};
+  syncOpen()};
+ showEmpty();
+ $('#cl2').addEventListener('click',e=>{const it=e.target.closest('.citem');if(it)open(+it.dataset.a,+it.dataset.c).then(loadList)});
+ let qt;$('#cq').addEventListener('input',()=>{clearTimeout(qt);qt=setTimeout(loadList,300)});$('#ca2').onchange=loadList;$('#cu').onchange=loadList;
+ await loadList();if(OPEN)await open(OPEN.aid,OPEN.cid);
+ TIMERS.push(setInterval(loadList,30000),setInterval(syncOpen,30000))}
+
+/* ---- требуют ответа ---- */
+function ago(d){if(!d)return '';const m=Math.round((Date.now()-new Date(d))/60000);return m<60?m+' мин назад':m<1440?Math.round(m/60)+' ч назад':Math.round(m/1440)+' дн назад'}
+async function needsView(){const r=await api('GET','/api/needs');
+ $('#view').innerHTML=`<div class="card"><h2>Требуют ответа</h2><p class="mut" style="margin:0">Ответы на рассылку, пришедшие в течение суток после отправки. Решите по каждому: если ответ нужен — откроется чат, и после вашего сообщения диалог уйдёт отсюда; если не нужен — пропадёт сразу.</p></div>`+
+ (r.map(n=>`<div class="card need" id="n-${n.account_id}-${n.chat_id}"><div class="item" style="border:0;padding:0"><div style="display:flex;gap:12px;align-items:center;min-width:0"><span class="avatar">${esc(ini(n.title))}</span>
+  <div><b>${esc(n.title)}</b> <span class="pill">${esc(n.account)}</span> ${n.needs_reply==='yes'?'<span class="pill pur">в работе</span>':'<span class="pill warn">новый ответ</span>'}
+  <div class="mut">${n.campaign?`Рассылка «${esc(n.campaign)}», отправлена ${ago(n.mailed_at)}`:''}${n.needs_since?` · ответ ${ago(n.needs_since)}`:''}</div></div></div></div>
+  <div class="recent">${n.recent.map(m=>`<div class="b in"><div>${esc(prev(m.text,m.kind)).replace(/\n/g,'<br>')}</div><div class="tm">${hhmm(m.date)}</div></div>`).join('')}</div>
+  <div class="btns">${n.needs_reply==='yes'?`<button class="btn" onclick="needGo(${n.account_id},${n.chat_id})">Открыть чат</button>`:`<button class="btn" onclick="needDecide(${n.account_id},${n.chat_id},'yes')">Ответ требуется</button>`}
+  <button class="btn sec" onclick="needDecide(${n.account_id},${n.chat_id},'no')">Ответ не требуется</button></div></div>`).join('')||'<div class="card"><p class="mut" style="margin:0">Пока нет ответов, требующих решения</p></div>')}
+function needGo(aid,cid){OPEN={aid,cid};show('chat')}
+async function needDecide(aid,cid,dec){try{await api('POST',`/api/needs/${aid}/${cid}`,{decision:dec})}catch{return needsView()}
+ if(dec==='yes')return needGo(aid,cid);
+ const el=document.getElementById(`n-${aid}-${cid}`);if(el)el.remove();refreshBadges();if(!document.querySelector('.need'))needsView()}
+
 /* ---- аналитика ---- */
 const AF={days:'30',campaign:'',account:''};
 const pc=(a,b)=>b?(Math.round(a/b*1000)/10)+'%':'—';
@@ -1284,7 +1650,7 @@ async function testsView(){const t=await api('GET','/api/test-recipients');
  $('#ta').onclick=async()=>{try{await api('POST','/api/test-recipients',{label:$('#tl').value,target:$('#tt').value});testsView()}catch{}}}
 async function delT(id){await api('DELETE','/api/test-recipients/'+id);testsView()}
 
-const VIEWS={campaigns:campaignsView,contacts:contactsView,analytics:analyticsView,accounts:accountsView,tests:testsView};
+const VIEWS={campaigns:campaignsView,chat:chatView,needs:needsView,contacts:contactsView,analytics:analyticsView,accounts:accountsView,tests:testsView};
 api('GET','/api/me').then(start).catch(e=>{if(e!==0)login()});
 </script></body></html>"""
 
