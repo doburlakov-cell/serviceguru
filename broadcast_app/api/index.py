@@ -70,7 +70,12 @@ create table if not exists targets(
   account_id int, chat_id bigint, title text, status text default 'pending',
   error text, sent_at timestamptz);
 create index if not exists targets_idx on targets(campaign_id, account_id, status);
+alter table targets add column if not exists message_id bigint;
+alter table targets add column if not exists read_at timestamptz;
+alter table accounts add column if not exists reads_checked_at timestamptz;
+create index if not exists targets_chat_idx on targets(chat_id);
 """
+SCHEMA_VERSION = 1   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -110,10 +115,21 @@ def auth(request: Request):
 
 
 async def ensure_schema(con):
+    """Обновляет структуру базы один раз на версию схемы. Блокировка нужна, потому что при холодном
+    старте несколько запросов приходят одновременно, а параллельные ALTER TABLE приводят к deadlock."""
     global _schema_ready
-    if not _schema_ready:
-        await con.execute(SCHEMA)
-        _schema_ready = True
+    if _schema_ready:
+        return
+    await con.fetchval("select pg_advisory_lock(424242)")
+    try:
+        await con.execute("create table if not exists meta(k text primary key, v int)")
+        if await con.fetchval("select v from meta where k='schema'") != SCHEMA_VERSION:
+            await con.execute(SCHEMA)
+            await con.execute("insert into meta(k, v) values('schema', $1) "
+                              "on conflict(k) do update set v=excluded.v", SCHEMA_VERSION)
+    finally:
+        await con.fetchval("select pg_advisory_unlock(424242)")
+    _schema_ready = True
 
 
 async def get_db():
@@ -131,7 +147,7 @@ async def health():
     res = {k: bool(os.environ.get(k)) for k in ("APP_PASSWORD", "SECRET_KEY", "CRON_SECRET", "DATABASE_URL")}
     try:
         con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
-        await con.execute(SCHEMA)
+        await ensure_schema(con)
         await con.close()
         res["db"] = "ok"
     except Exception as e:  # noqa: BLE001
@@ -209,18 +225,40 @@ def client_for(acc) -> TelegramClient:
 
 
 async def deliver(client, peer, text, media):
-    """Фото с подписью (если подпись влезает в лимит Telegram) либо фото и текст отдельно."""
+    """Фото с подписью (если подпись влезает в лимит Telegram) либо фото и текст отдельно.
+    Возвращает id последнего отправленного сообщения (по нему определяем прочтение)."""
     if not media:
-        await client.send_message(peer, text)
-        return
+        return (await client.send_message(peer, text)).id
     f = io.BytesIO(bytes(media["data"]))
     f.name = media["filename"] or "photo.jpg"
     if len(text) <= CAPTION_LIMIT:
-        await client.send_file(peer, f, caption=text, force_document=False)
-    else:
-        await client.send_file(peer, f, force_document=False)
-        if text:
-            await client.send_message(peer, text)
+        return (await client.send_file(peer, f, caption=text, force_document=False)).id
+    last = await client.send_file(peer, f, force_document=False)
+    if text:
+        last = await client.send_message(peer, text)
+    return last.id
+
+
+LOCK_BASE = 7_000_000
+
+
+async def lock_account(con, aid):
+    """Одну сессию Telegram нельзя использовать из двух мест сразу: блокировка на время запроса."""
+    if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+        raise HTTPException(409, "Аккаунт сейчас занят отправкой, повторите через минуту")
+
+
+async def mark_reads(con, aid, ro):
+    """ro: {chat_id: read_outbox_max_id}. Личное сообщение прочитано, если его id не больше отметки диалога."""
+    rows = await con.fetch(
+        "select t.id, t.chat_id, t.message_id from targets t join chats c "
+        "on c.account_id=t.account_id and c.chat_id=t.chat_id "
+        "where t.account_id=$1 and t.status='sent' and t.read_at is null and t.message_id is not null "
+        "and c.kind='user' and t.sent_at > now() - interval '30 days'", aid)
+    ids = [r["id"] for r in rows if r["message_id"] <= ro.get(r["chat_id"], 0)]
+    if ids:
+        await con.execute("update targets set read_at=now() where id=any($1)", ids)
+    return len(ids)
 
 
 def first_word(s: str) -> str:
@@ -297,7 +335,8 @@ async def sync_chats(aid: int, con=Depends(get_db)):
     acc = await con.fetchrow("select * from accounts where id=$1 and session is not null", aid)
     if not acc:
         raise HTTPException(404, "Аккаунт не найден или не авторизован")
-    rows, deadline = [], time.monotonic() + TICK_BUDGET
+    await lock_account(con, aid)
+    rows, ro, deadline = [], {}, time.monotonic() + TICK_BUDGET
     async with client_for(acc) as client:
         async for d in client.iter_dialogs():
             e = d.entity
@@ -306,6 +345,8 @@ async def sync_chats(aid: int, con=Depends(get_db)):
                 ptype = "user" if isinstance(e, User) else "channel" if isinstance(e, Channel) else "chat"
                 rows.append((aid, d.id, k, d.name or "", getattr(e, "username", None) or "",
                              e.id, ptype, getattr(e, "access_hash", None) or 0))
+            if isinstance(e, User):
+                ro[d.id] = d.dialog.read_outbox_max_id
             if time.monotonic() > deadline:
                 break
     await con.executemany(
@@ -313,7 +354,9 @@ async def sync_chats(aid: int, con=Depends(get_db)):
         "values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(account_id, chat_id) do update set "
         "kind=excluded.kind, title=excluded.title, username=excluded.username, raw_id=excluded.raw_id, "
         "ptype=excluded.ptype, access_hash=excluded.access_hash", rows)
-    return {"synced": len(rows)}
+    marked = await mark_reads(con, aid, ro)
+    await con.execute("update accounts set reads_checked_at=now() where id=$1", aid)
+    return {"synced": len(rows), "reads": marked}
 
 
 @app.delete("/api/accounts/{aid}", dependencies=[Depends(auth)])
@@ -324,25 +367,44 @@ async def delete_account(aid: int, con=Depends(get_db)):
 
 # ---------- контакты и исключения ----------
 CONTACTS_BASE = """
-from chats c join accounts a on a.id=c.account_id left join flags f on f.chat_id=c.chat_id
+from chats c join accounts a on a.id=c.account_id
+left join flags f on f.chat_id=c.chat_id
+left join (select chat_id, count(*) filter (where status='sent') as sent,
+                  count(*) filter (where read_at is not null) as reads, max(sent_at) as last_sent
+           from targets group by chat_id) s on s.chat_id=c.chat_id
 where ($1::text is null or c.title ilike '%'||$1||'%' or c.username ilike '%'||$1||'%' or c.chat_id::text=$1)
-and ($2::text is null or c.kind=$2)
+and ($2::text is null or c.kind = any(case when $2='groups' then array['group','supergroup'] else array[$2::text] end))
 and ($3::text is null or ($3='yes') = coalesce(f.skip,false))
+and ($4::int is null or c.account_id=$4)
+and ($5::int is null or coalesce(s.sent,0) >= $5)
+and ($6::int is null or coalesce(s.sent,0) <= $6)
+and ($7::text is null or ($7='yes' and coalesce(s.reads,0)>0)
+     or ($7='no' and coalesce(s.sent,0)>0 and coalesce(s.reads,0)=0))
 """
+SORTS = {"name": "min(c.title)", "sent": "coalesce(s.sent,0) desc, min(c.title)",
+         "last": "s.last_sent desc nulls last, min(c.title)"}
 
 
 def opt(v):
     return v.strip() if v and v.strip() else None
 
 
+def contact_args(q, kind, excluded, account, sent_min, sent_max, read):
+    return (opt(q), opt(kind), opt(excluded), account, sent_min, sent_max, opt(read))
+
+
 @app.get("/api/contacts", dependencies=[Depends(auth)])
 async def contacts(q: str | None = None, kind: str | None = None, excluded: str | None = None,
+                   account: int | None = None, sent_min: int | None = None, sent_max: int | None = None,
+                   read: str | None = None, sort: str = "name",
                    limit: int = 200, offset: int = 0, con=Depends(get_db)):
-    args = (opt(q), opt(kind), opt(excluded))
+    args = contact_args(q, kind, excluded, account, sent_min, sent_max, read)
     rows = await con.fetch(
         "select c.chat_id, min(c.title) as title, min(c.username) as username, min(c.kind) as kind, "
-        "array_agg(distinct a.name) as accounts, coalesce(f.skip,false) as excluded "
-        + CONTACTS_BASE + " group by c.chat_id, f.skip order by min(c.title) limit $4 offset $5",
+        "array_agg(distinct a.name) as accounts, coalesce(f.skip,false) as excluded, "
+        "coalesce(s.sent,0) as sent, coalesce(s.reads,0) as reads, s.last_sent "
+        + CONTACTS_BASE + " group by c.chat_id, f.skip, s.sent, s.reads, s.last_sent order by "
+        + SORTS.get(sort, SORTS["name"]) + " limit $8 offset $9",
         *args, min(max(limit, 1), 500), max(offset, 0))
     total = await con.fetchval("select count(distinct c.chat_id) " + CONTACTS_BASE, *args)
     return {"total": total, "items": [dict(r) for r in rows]}
@@ -357,6 +419,10 @@ class ExcludeFilterIn(BaseModel):
     q: str | None = None
     kind: str | None = None
     status: str | None = None     # yes / no / пусто
+    account: int | None = None
+    sent_min: int | None = None
+    sent_max: int | None = None
+    read: str | None = None
     excluded: bool = True
 
 
@@ -375,10 +441,10 @@ async def exclude_contacts(b: ExcludeIn, con=Depends(get_db)):
 
 @app.post("/api/contacts/exclude-filter", dependencies=[Depends(auth)])
 async def exclude_by_filter(b: ExcludeFilterIn, con=Depends(get_db)):
+    args = contact_args(b.q, b.kind, b.status, b.account, b.sent_min, b.sent_max, b.read)
     res = await con.execute(
-        "insert into flags(chat_id, skip) select distinct c.chat_id, $4::boolean " + CONTACTS_BASE +
-        " on conflict(chat_id) do update set skip=excluded.skip",
-        opt(b.q), opt(b.kind), opt(b.status), b.excluded)
+        "insert into flags(chat_id, skip) select distinct c.chat_id, $8::boolean " + CONTACTS_BASE +
+        " on conflict(chat_id) do update set skip=excluded.skip", *args, b.excluded)
     return {"changed": int(res.split()[-1])}
 
 
@@ -562,6 +628,7 @@ async def send_test(con, account_ids, text, media_id):
             break
     if not acc:
         raise HTTPException(400, "Нет доступного аккаунта для отправки теста")
+    await lock_account(con, acc["id"])
     media = await con.fetchrow("select filename, data from media where id=$1", media_id) if media_id else None
     results = []
     async with client_for(acc) as client:
@@ -655,66 +722,105 @@ def in_window(c, now_utc) -> bool:
     return s <= h < e if s < e else (h >= s or h < e)
 
 
-async def run_account(c, aid, deadline):
+async def send_batch(con, client, aid, c, n, deadline, now):
+    """Отправляет до n сообщений рассылки с аккаунта. Возвращает (отправлено, остановить аккаунт)."""
+    media = await con.fetchrow("select filename, data from media where id=$1", c["media_id"]) \
+        if c["media_id"] else None
+    gap = min(60 / c["per_minute"], 42 / max(n, 1))
+    sent = 0
+    for i in range(n):
+        if time.monotonic() > deadline:
+            break
+        t = await con.fetchrow(
+            "update targets set status='sending' where id=(select id from targets "
+            "where campaign_id=$1 and account_id=$2 and status='pending' order by id "
+            "limit 1 for update skip locked) returning id, chat_id, title", c["id"], aid)
+        if not t:
+            break
+        status, err, stop, msg_id = "sent", None, False, None
+        try:
+            row = await con.fetchrow(
+                "select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2",
+                aid, t["chat_id"])
+            if not row or not row["ptype"]:
+                raise LookupError("PeerNotSynced")
+            text = c["text"].replace("{name}", first_word(t["title"]))
+            msg_id = await deliver(client, peer_of(row), text, media)
+        except errors.FloodWaitError as e:
+            status, stop = "pending", True
+            await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
+                              now + timedelta(seconds=e.seconds + 5))
+        except errors.PeerFloodError:
+            status, stop = "pending", True
+            await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
+                              now + timedelta(hours=24))
+        except Exception as e:  # noqa: BLE001
+            status, err = "failed", type(e).__name__
+        await con.execute(
+            "update targets set status=$2::text, error=$3, message_id=$4, "
+            "sent_at=case when $2::text='sent' then now() end where id=$1", t["id"], status, err, msg_id)
+        if status == "sent":
+            sent += 1
+        if stop:
+            return sent, True
+        if i < n - 1:
+            await asyncio.sleep(gap * random.uniform(0.85, 1.15))
+    return sent, False
+
+
+async def refresh_reads(con, client, acc, deadline):
+    """Раз в 10 минут сверяет отметки «прочитано» в личных диалогах с отправленными сообщениями."""
+    last = acc["reads_checked_at"]
+    if last and datetime.now(timezone.utc) - last < timedelta(minutes=10):
+        return
+    pending = await con.fetchval(
+        "select count(*) from targets t join chats c on c.account_id=t.account_id and c.chat_id=t.chat_id "
+        "where t.account_id=$1 and t.status='sent' and t.read_at is null and t.message_id is not null "
+        "and c.kind='user' and t.sent_at > now() - interval '30 days'", acc["id"])
+    await con.execute("update accounts set reads_checked_at=now() where id=$1", acc["id"])
+    if not pending:
+        return
+    ro = {}
+    async for d in client.iter_dialogs():
+        if isinstance(d.entity, User):
+            ro[d.id] = d.dialog.read_outbox_max_id
+        if time.monotonic() > deadline:
+            break
+    await mark_reads(con, acc["id"], ro)
+
+
+async def run_account(aid, camps, deadline):
+    """Одно задание на аккаунт: рассылки по очереди (общий лимит в минуту), затем проверка прочтения."""
     con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
     try:
+        if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+            return
         acc = await con.fetchrow("select * from accounts where id=$1", aid)
         now = datetime.now(timezone.utc)
         if not acc or acc["status"] != "active" or (acc["blocked_until"] and acc["blocked_until"] > now):
             return
-        n = c["per_minute"]
-        if c["per_day"] > 0:
-            day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
-            sent_today = await con.fetchval(
-                "select count(*) from targets where campaign_id=$1 and account_id=$2 "
-                "and status='sent' and sent_at>=$3", c["id"], aid, day_start)
-            n = min(n, c["per_day"] - sent_today)
-        if n <= 0:
-            return
-        media = await con.fetchrow("select filename, data from media where id=$1", c["media_id"]) \
-            if c["media_id"] else None
-        gap = min(60 / c["per_minute"], 42 / n)
         client = client_for(acc)
         await client.connect()
         try:
             if not await client.is_user_authorized():
                 await con.execute("update accounts set status='error' where id=$1", aid)
                 return
-            for i in range(n):
-                if time.monotonic() > deadline:
-                    break
-                t = await con.fetchrow(
-                    "update targets set status='sending' where id=(select id from targets "
-                    "where campaign_id=$1 and account_id=$2 and status='pending' order by id "
-                    "limit 1 for update skip locked) returning id, chat_id, title", c["id"], aid)
-                if not t:
-                    break
-                status, err, stop = "sent", None, False
-                try:
-                    row = await con.fetchrow(
-                        "select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2",
-                        aid, t["chat_id"])
-                    if not row or not row["ptype"]:
-                        raise LookupError("PeerNotSynced")
-                    text = c["text"].replace("{name}", first_word(t["title"]))
-                    await deliver(client, peer_of(row), text, media)
-                except errors.FloodWaitError as e:
-                    status, stop = "pending", True
-                    await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
-                                      now + timedelta(seconds=e.seconds + 5))
-                except errors.PeerFloodError:
-                    status, stop = "pending", True
-                    await con.execute("update accounts set blocked_until=$2 where id=$1", aid,
-                                      now + timedelta(hours=24))
-                except Exception as e:  # noqa: BLE001
-                    status, err = "failed", type(e).__name__
-                await con.execute(
-                    "update targets set status=$2, error=$3, sent_at=case when $2='sent' then now() end "
-                    "where id=$1", t["id"], status, err)
+            left = max([c["per_minute"] for c in camps], default=0)
+            for c in camps:
+                n = min(c["per_minute"], left)
+                if c["per_day"] > 0:
+                    day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
+                    sent_today = await con.fetchval(
+                        "select count(*) from targets where campaign_id=$1 and account_id=$2 "
+                        "and status='sent' and sent_at>=$3", c["id"], aid, day_start)
+                    n = min(n, c["per_day"] - sent_today)
+                if n <= 0:
+                    continue
+                sent, stop = await send_batch(con, client, aid, c, n, deadline, now)
+                left -= sent
                 if stop:
-                    break
-                if i < n - 1:
-                    await asyncio.sleep(gap * random.uniform(0.85, 1.15))
+                    return
+            await refresh_reads(con, client, acc, deadline)
         finally:
             await client.disconnect()
     finally:
@@ -734,7 +840,7 @@ async def tick(request: Request):
         await con.execute(
             "delete from media where created_at < now() - interval '1 day' "
             "and id not in (select media_id from campaigns where media_id is not null)")
-        camps = await con.fetch("select * from campaigns where status='running'")
+        camps = await con.fetch("select * from campaigns where status='running' order by id")
         if camps:
             # исключённые после создания рассылки контакты пропускаем
             await con.execute(
@@ -742,8 +848,19 @@ async def tick(request: Request):
                 "and chat_id in (select chat_id from flags where skip)", [c["id"] for c in camps])
         now = datetime.now(timezone.utc)
         deadline = time.monotonic() + TICK_BUDGET
-        jobs = [run_account(c, aid, deadline) for c in camps if in_window(c, now) for aid in c["account_ids"]]
-        await asyncio.gather(*jobs, return_exceptions=True)
+        by_acc: dict[int, list] = {}
+        for c in camps:
+            if in_window(c, now):
+                for aid in c["account_ids"]:
+                    by_acc.setdefault(aid, []).append(c)
+        for r in await con.fetch(
+                "select id from accounts where status='active' and "
+                "(reads_checked_at is null or reads_checked_at < now() - interval '10 minutes') and exists "
+                "(select 1 from targets t where t.account_id=accounts.id and t.status='sent' "
+                "and t.read_at is null and t.message_id is not null and t.sent_at > now() - interval '30 days')"):
+            by_acc.setdefault(r["id"], [])
+        await asyncio.gather(*[run_account(aid, cs, deadline) for aid, cs in by_acc.items()],
+                             return_exceptions=True)
         await con.execute(
             "update campaigns c set status='done' where status='running' and not exists "
             "(select 1 from targets t where t.campaign_id=c.id and t.status in ('pending','sending'))")
@@ -914,30 +1031,45 @@ async function tg(id){const r=await api('GET',`/api/campaigns/${id}/targets`);co
  <div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest('.modal').remove()">Закрыть</button></div>`)}
 
 /* ---- контакты ---- */
-const CF={q:'',kind:'',status:'',offset:0};
+const CF={q:'',kind:'',status:'',account:'',smin:'',smax:'',read:'',sort:'name',offset:0};
 async function contactsView(){
+ const accs=await api('GET','/api/accounts');
+ const sel=(id,label,opts,cur)=>`<div><label style="margin-top:0">${label}</label><select id="${id}">${opts.map(([v,t])=>`<option value="${v}" ${String(cur)===String(v)?'selected':''}>${t}</option>`).join('')}</select></div>`;
  $('#view').innerHTML=`<div class="card"><h2>Контакты и исключения</h2>
- <p class="mut">Исключённым контактам рассылки не отправляются: ни новые, ни уже созданные. Список собирается при синхронизации чатов аккаунтов.</p>
+ <p class="mut">Исключённым контактам рассылки не отправляются: ни новые, ни уже созданные. Список и статусы прочтения обновляются при синхронизации чатов аккаунта; прочтение отслеживается только в личных чатах (в группах и каналах Telegram его не показывает).</p>
  <div class="row"><div><label style="margin-top:0">Поиск</label><input id="fq" placeholder="название или @username" value="${esc(CF.q)}"></div>
- <div><label style="margin-top:0">Тип</label><select id="fk"><option value="">Все</option>${Object.entries(kindName).map(([k,t])=>`<option value="${k}" ${CF.kind===k?'selected':''}>${t}</option>`).join('')}</select></div>
- <div><label style="margin-top:0">Статус</label><select id="fs"><option value="">Все</option><option value="no" ${CF.status==='no'?'selected':''}>Получают рассылки</option><option value="yes" ${CF.status==='yes'?'selected':''}>Исключены</option></select></div></div>
- <div class="btns" style="margin-top:12px"><button class="btn sm" id="fa">Найти</button><button class="btn dng sm" id="fx">Исключить всех найденных</button><button class="btn sec sm" id="fr">Вернуть всех найденных</button></div>
+ ${sel('fk','Тип',[['','Все'],['user','Личные'],['groups','Группы'],['channel','Каналы']],CF.kind)}
+ ${sel('fa2','Из какого Telegram',[['','Все аккаунты'],...accs.map(a=>[a.id,a.name])],CF.account)}</div>
+ <div class="row">${sel('fs','Статус',[['','Все'],['no','Получают рассылки'],['yes','Исключены']],CF.status)}
+ <div><label style="margin-top:0">Рассылок получено: от</label><input id="fsm" type="number" min="0" value="${esc(CF.smin)}" placeholder="0"></div>
+ <div><label style="margin-top:0">до</label><input id="fsx" type="number" min="0" value="${esc(CF.smax)}" placeholder="любое"></div>
+ ${sel('fr','Прочитано',[['','Все'],['yes','Прочитали хотя бы одну'],['no','Писали, но не читали']],CF.read)}
+ ${sel('fo','Сортировка',[['name','По названию'],['sent','По числу рассылок'],['last','По дате последней']],CF.sort)}</div>
+ <div class="btns" style="margin-top:12px"><button class="btn sm" id="fa">Найти</button><button class="btn dng sm" id="fx">Исключить всех найденных</button><button class="btn sec sm" id="fr2">Вернуть всех найденных</button><button class="btn sec sm" id="f0">Сбросить фильтры</button></div>
  <div id="cl" style="margin-top:12px"></div><div id="cm"></div></div>
  <div class="card"><h2>Исключить списком</h2><p class="mut">Вставьте @username или id чатов, по одному в строке.</p>
  <textarea id="el" rows="4"></textarea><div class="btns" style="margin-top:10px"><button class="btn" id="eb">Исключить</button></div></div>`;
- const read=()=>{CF.q=$('#fq').value;CF.kind=$('#fk').value;CF.status=$('#fs').value};
- const load=async(more)=>{read();if(!more)CF.offset=0;const p=new URLSearchParams({q:CF.q,kind:CF.kind,excluded:CF.status,limit:200,offset:CF.offset});
-  const r=await api('GET','/api/contacts?'+p);const html=r.items.map(c=>`<div class="contact"><div class="nm"><b>${esc(c.title||'(без названия)')}</b>
-   <span class="mut">${c.username?'@'+esc(c.username)+' · ':''}${kindName[c.kind]||c.kind} · ${esc(c.accounts.join(', '))}</span></div>
+ const read=()=>{CF.q=$('#fq').value;CF.kind=$('#fk').value;CF.account=$('#fa2').value;CF.status=$('#fs').value;CF.smin=$('#fsm').value;CF.smax=$('#fsx').value;CF.read=$('#fr').value;CF.sort=$('#fo').value};
+ const params=extra=>{const p=new URLSearchParams();[['q',CF.q],['kind',CF.kind],['account',CF.account],['excluded',CF.status],['sent_min',CF.smin],['sent_max',CF.smax],['read',CF.read]].forEach(([k,v])=>{if(v!==''&&v!=null)p.set(k,v)});
+  Object.entries(extra||{}).forEach(([k,v])=>p.set(k,v));return p};
+ const num=v=>v===''?null:+v;
+ const stats=c=>{const parts=[`Рассылок: ${c.sent}`];parts.push(c.kind==='user'?`прочитано: ${c.reads}`:'прочтение: нет данных');
+  if(c.last_sent)parts.push('последняя '+new Date(c.last_sent).toLocaleDateString('ru'));return parts.join(' · ')};
+ const load=async(more)=>{read();if(!more)CF.offset=0;const r=await api('GET','/api/contacts?'+params({sort:CF.sort,limit:200,offset:CF.offset}));
+  const html=r.items.map(c=>`<div class="contact"><div class="nm"><b>${esc(c.title||'(без названия)')}</b>
+   <span class="mut">${c.username?'@'+esc(c.username)+' · ':''}${kindName[c.kind]||c.kind} · ${esc(c.accounts.join(', '))}</span>
+   <span class="mut" style="display:block">${stats(c)}</span></div>
    ${c.excluded?'<span class="pill bad">не писать</span>':''}<button class="btn ${c.excluded?'sec':'dng'} sm" data-id="${c.chat_id}" data-x="${c.excluded?0:1}">${c.excluded?'Вернуть':'Не писать'}</button></div>`).join('');
-  if(more)$('#cl').insertAdjacentHTML('beforeend',html);else $('#cl').innerHTML=r.total?`<p class="mut">Найдено: ${r.total}</p>`+html:'<p class="mut">Ничего нет. Синхронизируйте чаты на вкладке «Аккаунты».</p>';
+  if(more)$('#cl').insertAdjacentHTML('beforeend',html);else $('#cl').innerHTML=r.total?`<p class="mut">Найдено: ${r.total}</p>`+html:'<p class="mut">Ничего нет. Измените фильтры или синхронизируйте чаты на вкладке «Аккаунты».</p>';
   CF.offset+=r.items.length;$('#cm').innerHTML=CF.offset<r.total?'<button class="btn sec sm" id="mr" style="margin-top:10px">Показать ещё</button>':'';if($('#mr'))$('#mr').onclick=()=>load(true)};
  $('#cl').addEventListener('click',async e=>{const b=e.target.closest('button[data-id]');if(!b)return;
   await api('POST','/api/contacts/exclude',{chat_ids:[+b.dataset.id],excluded:b.dataset.x==='1'});load()});
  $('#fa').onclick=()=>load();$('#fq').addEventListener('keydown',e=>{if(e.key==='Enter')load()});
- const bulk=async v=>{read();if(!confirm((v?'Исключить':'Вернуть')+' всех найденных контактов по текущему фильтру?'))return;
-  const r=await api('POST','/api/contacts/exclude-filter',{q:CF.q,kind:CF.kind,status:CF.status,excluded:v});note('Изменено контактов: '+r.changed);load()};
- $('#fx').onclick=()=>bulk(true);$('#fr').onclick=()=>bulk(false);
+ ['fk','fa2','fs','fr','fo'].forEach(id=>$('#'+id).addEventListener('change',()=>load()));
+ $('#f0').onclick=()=>{Object.assign(CF,{q:'',kind:'',status:'',account:'',smin:'',smax:'',read:'',sort:'name'});contactsView()};
+ const bulk=async v=>{read();if(!confirm((v?'Исключить':'Вернуть')+' всех найденных контактов по текущим фильтрам?'))return;
+  const r=await api('POST','/api/contacts/exclude-filter',{q:CF.q||null,kind:CF.kind||null,status:CF.status||null,account:num(CF.account),sent_min:num(CF.smin),sent_max:num(CF.smax),read:CF.read||null,excluded:v});note('Изменено контактов: '+r.changed);load()};
+ $('#fx').onclick=()=>bulk(true);$('#fr2').onclick=()=>bulk(false);
  $('#eb').onclick=async()=>{const r=await api('POST','/api/contacts/exclude-list',{text:$('#el').value,excluded:true});note(`Исключено: ${r.matched} из ${r.requested} в списке`);$('#el').value='';load()};
  load()}
 
@@ -953,7 +1085,7 @@ async function accountsView(){const accs=await api('GET','/api/accounts');
  <p class="mut">api_id и api_hash берутся на <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> → API development tools.</p></div>`;
  $('#aa').onclick=async()=>{try{await api('POST','/api/accounts',{name:$('#an').value,phone:$('#ap').value,api_id:+$('#ai').value,api_hash:$('#ah').value});accountsView()}catch{}}}
 async function code(id){const c=prompt('Код из Telegram');if(!c)return;const p=prompt('Пароль 2FA (если нет — оставьте пустым)')||null;try{await api('POST',`/api/accounts/${id}/code`,{code:c,password:p})}catch{}accountsView()}
-async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced)}catch{}accountsView()}
+async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced+(r.reads?', новых прочтений: '+r.reads:''))}catch{}accountsView()}
 async function delA(id){if(confirm('Удалить аккаунт?')){await api('DELETE','/api/accounts/'+id);accountsView()}}
 
 /* ---- тест ---- */
