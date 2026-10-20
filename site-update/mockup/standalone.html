@@ -4,489 +4,659 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600&family=Geologica:wght@300;400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;500;600;700&family=Geologica:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
-/* Concept: dark "control room" for a team platform. Brand cyan carries the page, lime is reserved for rewards and growth numbers.
-   One bold moment: the hero product composition (phone + live leaderboard + plan/fact ring). Everything else stays quiet. */
+/* Concept: mission control for frontline teams. Ink-black canvas, a living aurora, glass panels with spotlight edges.
+   One bold moment: the hero phone is a working product simulator (chips switch its screens, the leaderboard re-ranks live).
+   Cyan is the brand, lime is reserved for points, growth and rewards, coral only for small alerts. */
 :root{
-  --bg:#070f1a; --bg-2:#0b1726; --surface:#0f2033; --surface-2:#132a42;
-  --line:rgba(140,190,230,.14); --line-2:rgba(140,190,230,.26);
-  --fg:#eaf3fb; --muted:#8fa7bc; --accent:#00bdff; --accent-ink:#021722; --accent-soft:rgba(0,189,255,.12);
-  --lime:#c4f236; --lime-ink:#1a2200; --glow:rgba(0,189,255,.28);
+  --bg:#04060c; --bg-2:#070b14; --panel:rgba(255,255,255,.045); --panel-2:rgba(255,255,255,.075); --solid:#0b111d;
+  --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.18);
+  --fg:#f1f6fc; --muted:#8c9bb0; --dim:#5d6b80;
+  --cyan:#00cfff; --lime:#b6ff3b; --coral:#ff5f7e; --violet:#7a6bff;
+  --on-cyan:#00141d; --glow:rgba(0,207,255,.35);
+  --b1:rgba(0,207,255,.55); --b2:rgba(122,107,255,.45); --b3:rgba(182,255,59,.35);
   --font-display:'Unbounded','Geologica',system-ui,sans-serif;
   --font-body:'Geologica',system-ui,-apple-system,'Segoe UI',sans-serif;
-  --r:20px; --r-sm:12px; --wrap:1180px;
-  color-scheme:dark;
+  --font-mono:'JetBrains Mono',ui-monospace,Menlo,Consolas,monospace;
+  --wrap:1240px; --r:26px; color-scheme:dark;
 }
 @media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
-  --bg:#f3f8fc; --bg-2:#e9f1f8; --surface:#ffffff; --surface-2:#f0f6fb;
-  --line:rgba(8,40,70,.12); --line-2:rgba(8,40,70,.22);
-  --fg:#0a1b2b; --muted:#4c657a; --accent:#0079a8; --accent-ink:#ffffff; --accent-soft:rgba(0,150,210,.1);
-  --lime:#6a9a00; --lime-ink:#fff; --glow:rgba(0,150,210,.2); color-scheme:light}}
+  --bg:#eef3f9; --bg-2:#e5ecf5; --panel:rgba(255,255,255,.72); --panel-2:rgba(255,255,255,.95); --solid:#ffffff;
+  --line:rgba(10,30,55,.1); --line-2:rgba(10,30,55,.2);
+  --fg:#08172a; --muted:#475d75; --dim:#7a8ca0;
+  --cyan:#0080ad; --lime:#4f8a00; --coral:#d93a5c; --violet:#5b49e0;
+  --on-cyan:#ffffff; --glow:rgba(0,128,173,.25);
+  --b1:rgba(0,128,173,.5); --b2:rgba(91,73,224,.35); --b3:rgba(79,138,0,.35); color-scheme:light}}
 :root[data-theme="light"]{
-  --bg:#f3f8fc; --bg-2:#e9f1f8; --surface:#ffffff; --surface-2:#f0f6fb;
-  --line:rgba(8,40,70,.12); --line-2:rgba(8,40,70,.22);
-  --fg:#0a1b2b; --muted:#4c657a; --accent:#0079a8; --accent-ink:#ffffff; --accent-soft:rgba(0,150,210,.1);
-  --lime:#6a9a00; --lime-ink:#fff; --glow:rgba(0,150,210,.2); color-scheme:light}
+  --bg:#eef3f9; --bg-2:#e5ecf5; --panel:rgba(255,255,255,.72); --panel-2:rgba(255,255,255,.95); --solid:#ffffff;
+  --line:rgba(10,30,55,.1); --line-2:rgba(10,30,55,.2);
+  --fg:#08172a; --muted:#475d75; --dim:#7a8ca0;
+  --cyan:#0080ad; --lime:#4f8a00; --coral:#d93a5c; --violet:#5b49e0;
+  --on-cyan:#ffffff; --glow:rgba(0,128,173,.25);
+  --b1:rgba(0,128,173,.5); --b2:rgba(91,73,224,.35); --b3:rgba(79,138,0,.35); color-scheme:light}
+
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--fg);font:400 16px/1.6 var(--font-body);-webkit-font-smoothing:antialiased;overflow-x:hidden}
-img,svg{max-width:100%}
+img,svg,canvas{max-width:100%}
 a{color:inherit;text-decoration:none}
-.wrap{max-width:var(--wrap);margin-inline:auto;padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px))}
-section{padding-block:clamp(56px,9vw,112px);position:relative}
-h1,h2,h3{font-family:var(--font-display);font-weight:400;letter-spacing:-.01em;line-height:1.12;margin:0;text-wrap:balance}
-h2{font-size:clamp(26px,3.6vw,44px)}
-h3{font-size:clamp(17px,1.6vw,21px);line-height:1.3}
 p{margin:0}
-.eyebrow{font:500 12px/1 var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);display:inline-flex;align-items:center;gap:10px}
-.eyebrow::before{content:"";width:22px;height:1px;background:currentColor}
-.lead{color:var(--muted);font-size:clamp(16px,1.4vw,19px);max-width:62ch}
-.head{display:grid;gap:16px;margin-bottom:clamp(32px,5vw,56px);max-width:820px}
+h1,h2,h3{font-family:var(--font-display);font-weight:500;letter-spacing:-.02em;line-height:1.08;margin:0;text-wrap:balance}
+h2{font-size:clamp(28px,4.4vw,58px)}
+h3{font-size:clamp(17px,1.5vw,20px);line-height:1.3;letter-spacing:-.01em}
+.wrap{max-width:var(--wrap);margin-inline:auto;padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px))}
+section{padding-block:clamp(72px,10vw,140px);position:relative}
+.mono{font-family:var(--font-mono)}
+.tag{font:500 12px/1 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--cyan);display:inline-flex;align-items:center;gap:10px}
+.tag::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--lime);box-shadow:0 0 12px var(--lime)}
+.lead{color:var(--muted);font-size:clamp(16px,1.35vw,19px);max-width:60ch}
+.head{display:grid;gap:18px;margin-bottom:clamp(36px,5vw,64px);max-width:900px}
+.grad{background:linear-gradient(100deg,var(--cyan),var(--lime) 70%);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* glass panel with spotlight edge */
+.panel{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);overflow:hidden;isolation:isolate;--mx:50%;--my:0%}
+.panel::before{content:"";position:absolute;inset:0;z-index:-1;background:radial-gradient(420px circle at var(--mx) var(--my),color-mix(in srgb,var(--cyan) 22%,transparent),transparent 45%);opacity:0;transition:opacity .35s}
+.panel::after{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;background:radial-gradient(260px circle at var(--mx) var(--my),var(--b1),transparent 60%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:0;transition:opacity .35s;pointer-events:none}
+.panel:hover::before,.panel:hover::after{opacity:1}
 
 /* buttons */
-.btn{display:inline-flex;align-items:center;gap:10px;font:500 15px/1 var(--font-body);padding:16px 24px;border-radius:14px;border:1px solid transparent;cursor:pointer;transition:transform .2s,box-shadow .2s,background .2s;line-height:1.25;text-align:left}
-.out>*,.days>*,.proof-grid>*,.about-grid>*,.faq>*,.hero .wrap>*,.final .box>*,.lead-strip .box>*{min-width:0}
-.btn-primary{background:var(--accent);color:var(--accent-ink);box-shadow:0 8px 30px -8px var(--glow)}
-.btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 36px -8px var(--glow)}
-.btn-ghost{background:transparent;color:var(--fg);border-color:var(--line-2)}
-.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
-.btn:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-.arrow{transition:transform .2s}.btn:hover .arrow,.link:hover .arrow{transform:translateX(4px)}
-.link{display:inline-flex;gap:8px;align-items:center;color:var(--accent);font-weight:500}
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:12px;font:500 15px/1.2 var(--font-body);padding:17px 26px;border-radius:16px;border:1px solid transparent;cursor:pointer;transition:transform .25s,box-shadow .25s,background .25s,border-color .25s;white-space:normal;text-align:left}
+.btn-primary{background:linear-gradient(135deg,var(--cyan),color-mix(in srgb,var(--cyan) 55%,var(--lime)));color:var(--on-cyan);font-weight:600;box-shadow:0 10px 40px -10px var(--glow),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-primary:hover{transform:translateY(-3px);box-shadow:0 18px 50px -10px var(--glow),inset 0 1px 0 rgba(255,255,255,.35)}
+.btn-ghost{background:var(--panel);color:var(--fg);border-color:var(--line-2);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.btn-ghost:hover{border-color:var(--cyan);transform:translateY(-3px)}
+a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+.arr{display:inline-block;transition:transform .25s}.btn:hover .arr,.more:hover .arr{transform:translateX(5px)}
+.more{display:inline-flex;gap:10px;align-items:center;color:var(--cyan);font-weight:500}
 
-/* header */
-.nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:50;backdrop-filter:blur(16px) saturate(1.4);-webkit-backdrop-filter:blur(16px) saturate(1.4);background:color-mix(in srgb,var(--bg) 78%,transparent);border-bottom:1px solid var(--line)}
-body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:60;background:var(--bg)}
-.nav .wrap{display:flex;align-items:center;gap:24px;height:72px;max-width:1360px}
-.logo{font:500 18px/1 var(--font-display);display:flex;align-items:center;gap:10px}
-.logo i{width:30px;height:30px;border-radius:9px;background:conic-gradient(from 210deg,var(--accent),#5be1ff,var(--lime),var(--accent));display:grid;place-items:center}
+/* floating nav */
+.navwrap{position:fixed;top:calc(14px + env(safe-area-inset-top,0px));left:0;right:0;z-index:50;display:flex;justify-content:center;padding-inline:max(12px,env(safe-area-inset-left,0px)) max(12px,env(safe-area-inset-right,0px));pointer-events:none}
+.nav{pointer-events:auto;display:flex;align-items:center;gap:22px;max-width:1240px;width:100%;padding:10px 12px 10px 20px;border-radius:22px;background:color-mix(in srgb,var(--bg) 80%,transparent);border:1px solid var(--line-2);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);box-shadow:0 20px 60px -30px rgba(0,0,0,.7)}
+.logo{display:flex;align-items:center;gap:10px;font:600 17px/1 var(--font-display);letter-spacing:-.02em;white-space:nowrap}
+.logo i{width:30px;height:30px;border-radius:10px;background:conic-gradient(from 200deg,var(--cyan),var(--violet),var(--lime),var(--cyan));display:grid;place-items:center;animation:spin 8s linear infinite}
 .logo i::after{content:"";width:12px;height:12px;border-radius:4px;background:var(--bg)}
-.menu{display:flex;gap:20px;margin-left:8px;font-size:14px}
-.menu a{color:var(--muted);transition:color .2s}.menu a:hover{color:var(--fg)}
-.nav-r{margin-left:auto;display:flex;align-items:center;gap:18px}
-.tel{display:none;white-space:nowrap;font-size:14.5px;font-variant-numeric:tabular-nums;color:var(--fg)}
-@media(min-width:1440px){.tel{display:block}}
-.nav .btn{padding:12px 18px;font-size:14px;white-space:nowrap}
-.burger{display:none;background:none;border:1px solid var(--line-2);color:var(--fg);width:44px;height:44px;border-radius:12px;cursor:pointer}
-.theme{display:grid;place-items:center;background:none;border:1px solid var(--line-2);color:var(--muted);width:40px;height:40px;border-radius:12px;cursor:pointer;font-size:15px}
-@media(max-width:1180px){.menu,.tel,.nav .btn-ghost{display:none}.burger{display:block}
-  .menu.open{display:flex;position:absolute;top:72px;left:0;right:0;flex-direction:column;gap:0;margin:0;background:var(--bg);border-bottom:1px solid var(--line);padding:8px max(16px,env(safe-area-inset-left,0px)) 20px}
-  .menu.open a{padding:14px 0;border-bottom:1px solid var(--line);font-size:17px}}
-
-@media(max-width:600px){.nav .btn-primary{display:none}.nav-r{gap:10px}}
+@keyframes spin{to{filter:hue-rotate(360deg)}}
+.menu{display:flex;gap:4px;margin-left:6px}
+.menu a{font-size:14px;color:var(--muted);padding:9px 12px;border-radius:12px;transition:.2s;white-space:nowrap}
+.menu a:hover{color:var(--fg);background:var(--panel-2)}
+.nav-r{margin-left:auto;display:flex;align-items:center;gap:10px}
+.tel{display:none;white-space:nowrap;font:500 14px var(--font-mono);color:var(--fg);padding-inline:6px}
+@media(min-width:1600px){.tel{display:block}}
+.nav .btn{padding:12px 18px;font-size:14px;white-space:nowrap;border-radius:14px}
+.icon-btn{display:grid;place-items:center;width:42px;height:42px;border-radius:14px;border:1px solid var(--line-2);background:var(--panel);color:var(--fg);cursor:pointer}
+.burger{display:none}
+@media(max-width:1180px){.menu,.nav .btn-ghost{display:none}.burger{display:grid}
+  .menu.open{display:flex;flex-direction:column;position:absolute;top:calc(100% + 10px);left:max(12px,env(safe-area-inset-left,0px));right:max(12px,env(safe-area-inset-right,0px));padding:10px;background:color-mix(in srgb,var(--bg) 92%,transparent);border:1px solid var(--line-2);border-radius:22px;backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);pointer-events:auto}
+  .menu.open a{padding:14px;font-size:17px}.navwrap{position:fixed}.nav{position:relative}}
+@media(max-width:600px){.nav .btn-primary{display:none}}
 
 /* hero */
-.hero{padding-top:clamp(40px,6vw,88px);overflow:hidden}
-.hero::before{content:"";position:absolute;inset:-20% -10% auto -10%;height:120%;background:
-  radial-gradient(40% 40% at 78% 28%,var(--glow),transparent 70%),
-  radial-gradient(30% 35% at 12% 8%,color-mix(in srgb,var(--lime) 14%,transparent),transparent 70%);pointer-events:none}
-.hero::after{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:64px 64px;mask-image:radial-gradient(70% 60% at 50% 30%,#000,transparent 75%);-webkit-mask-image:radial-gradient(70% 60% at 50% 30%,#000,transparent 75%);opacity:.5;pointer-events:none}
-.hero .wrap{position:relative;z-index:1;display:grid;grid-template-columns:1.05fr .95fr;gap:clamp(32px,5vw,72px);align-items:center}
-.hero h1{font-size:clamp(28px,3.5vw,50px);font-weight:400;text-transform:uppercase;margin:22px 0 24px}
-.hero h1 em{font-style:normal;color:var(--accent)}
-.chips{display:flex;flex-wrap:wrap;gap:10px;margin:30px 0 36px}
-.chip{border:1px solid var(--line-2);border-radius:999px;padding:8px 16px;font-size:14px;color:var(--muted);background:color-mix(in srgb,var(--surface) 60%,transparent)}
-.hero-cta{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
-.stage{position:relative;min-height:520px;display:grid;place-items:center}
-.phone{width:min(290px,70vw);aspect-ratio:9/18.5;border-radius:42px;background:linear-gradient(160deg,var(--surface-2),var(--surface));border:1px solid var(--line-2);padding:14px;box-shadow:0 40px 80px -30px rgba(0,0,0,.6),0 0 0 8px color-mix(in srgb,var(--bg-2) 70%,transparent);position:relative;transform:rotate(-3deg)}
-.phone::before{content:"";position:absolute;top:10px;left:50%;translate:-50% 0;width:90px;height:22px;border-radius:12px;background:var(--bg)}
-.screen{height:100%;border-radius:30px;background:var(--bg);padding:42px 16px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
-.scr-t{font:500 11px/1 var(--font-body);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:14px;background:var(--surface);border:1px solid var(--line);font-size:13px}
-.row b{font-weight:500;margin-left:auto;font-variant-numeric:tabular-nums}
-.av{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--lime));flex:none}
-.av.b{background:linear-gradient(135deg,#7aa2ff,var(--accent))}.av.c{background:linear-gradient(135deg,#ffb36b,#ff6b8a)}
-.bar{height:6px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:6px}
-.bar i{display:block;height:100%;width:var(--w);background:linear-gradient(90deg,var(--accent),var(--lime));border-radius:6px;transform-origin:left;animation:grow 1.4s .6s cubic-bezier(.2,.8,.2,1) both}
-@keyframes grow{from{transform:scaleX(0)}}
-.float{position:absolute;background:color-mix(in srgb,var(--surface) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--line-2);border-radius:18px;padding:16px 18px;box-shadow:0 24px 50px -24px rgba(0,0,0,.55)}
-.f1{left:-9%;top:0;width:200px;animation:bob 7s ease-in-out infinite}
-.f2{right:-4%;top:40%;animation:bob 8s 1s ease-in-out infinite}
-.f3{left:-2%;bottom:10%;animation:bob 9s .5s ease-in-out infinite}
-@keyframes bob{50%{transform:translateY(-10px)}}
-.ring{width:84px;height:84px;display:block}
-.big{font:500 34px/1 var(--font-display);color:var(--lime)}
-.small{font-size:12px;color:var(--muted)}
-.f1 .top{display:flex;gap:14px;align-items:center}
-.reveal{animation:rise .9s cubic-bezier(.2,.8,.2,1) both}
-.reveal.d1{animation-delay:.1s}.reveal.d2{animation-delay:.2s}.reveal.d3{animation-delay:.3s}
-@keyframes rise{from{opacity:0;transform:translateY(22px)}}
-@media(max-width:940px){.hero .wrap{grid-template-columns:1fr}.stage{min-height:480px}.f1{left:0}.f2{right:0}}
-@media(max-width:520px){.f1{width:170px;padding:12px}.f2{top:auto;bottom:22%}.f3{display:none}.stage{min-height:440px}}
+.hero{padding-block:clamp(120px,13vw,170px) clamp(48px,6vw,80px);overflow:hidden;min-height:min(100svh,980px)}
+#aurora{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:0}
+.hero::after{content:"";position:absolute;inset:0;z-index:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:72px 72px;mask-image:radial-gradient(80% 70% at 50% 35%,#000,transparent 80%);-webkit-mask-image:radial-gradient(80% 70% at 50% 35%,#000,transparent 80%);opacity:.55;pointer-events:none}
+.hero .wrap{position:relative;z-index:2;display:grid;grid-template-columns:1.12fr .88fr;gap:clamp(24px,4vw,64px);align-items:center}
+.hero .wrap>*{min-width:0}
+.pill{display:inline-flex;align-items:center;gap:10px;padding:8px 16px 8px 10px;border-radius:999px;border:1px solid var(--line-2);background:var(--panel);font:500 12px/1 var(--font-mono);letter-spacing:.1em;text-transform:uppercase;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.pill b{background:var(--lime);color:#0b1400;border-radius:999px;padding:5px 9px;font-weight:600;letter-spacing:.06em}
+.hero h1{font-size:clamp(30px,3.7vw,62px);font-weight:600;text-transform:uppercase;line-height:1;margin:26px 0 28px;letter-spacing:-.035em}
+.hero h1 .l2{display:block;background:linear-gradient(100deg,var(--cyan) 10%,var(--lime) 90%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero .lead{font-size:clamp(16px,1.5vw,20px)}
+.chips{display:flex;flex-wrap:wrap;gap:10px;margin:32px 0 36px}
+.chip{position:relative;overflow:hidden;font:500 14px/1 var(--font-body);color:var(--muted);padding:12px 18px;border-radius:999px;border:1px solid var(--line-2);background:var(--panel);cursor:pointer;transition:.25s}
+.chip:hover{color:var(--fg);border-color:var(--cyan)}
+.chip.on{color:var(--on-cyan);background:var(--cyan);border-color:var(--cyan);box-shadow:0 8px 30px -8px var(--glow)}
+.chip.on::after{content:"";position:absolute;left:0;bottom:0;height:3px;background:var(--lime);width:100%;transform-origin:left;animation:fill 4.2s linear both}
+@keyframes fill{from{transform:scaleX(0)}}
+.cta-row{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.scroll{display:flex;align-items:center;gap:12px;font:500 12px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-top:44px}
+.scroll i{width:1px;height:38px;background:linear-gradient(var(--cyan),transparent);animation:drip 2s ease-in-out infinite}
+@keyframes drip{50%{transform:scaleY(.4);transform-origin:top}}
 
-/* trust */
-.trust{padding-block:0 clamp(40px,6vw,72px)}
-.trust-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.card{background:linear-gradient(180deg,var(--surface),color-mix(in srgb,var(--surface) 70%,var(--bg)));border:1px solid var(--line);border-radius:var(--r);padding:28px}
-.tcard{display:grid;gap:6px}
-.tcard .k{font:500 12px/1 var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
-.tcard .v{font:400 17px/1.4 var(--font-display)}
-@media(max-width:760px){.trust-grid{grid-template-columns:1fr}}
+/* simulator */
+.stage{position:relative;display:grid;place-items:center;min-height:620px;perspective:1400px}
+.device{position:relative;width:min(318px,78vw);aspect-ratio:9/19;border-radius:50px;padding:12px;background:linear-gradient(150deg,#27324a,#0a0f1a 55%);border:1px solid var(--line-2);box-shadow:0 60px 120px -40px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.04) inset,0 0 90px -20px var(--glow);transform:rotateY(-10deg) rotateX(4deg);transition:transform .25s ease-out;will-change:transform;transform-style:preserve-3d}
+.device::before{content:"";position:absolute;top:20px;left:50%;translate:-50% 0;width:84px;height:24px;border-radius:14px;background:#000;z-index:5}
+.display{position:relative;height:100%;border-radius:39px;overflow:hidden;background:linear-gradient(180deg,#0c1424,#060a13);color:#eaf2fb}
+.scr{position:absolute;inset:0;padding:58px 18px 18px;display:flex;flex-direction:column;gap:12px;opacity:0;transform:translateY(14px) scale(.98);transition:opacity .5s,transform .5s;pointer-events:none}
+.scr.on{opacity:1;transform:none;pointer-events:auto}
+.sh{display:flex;justify-content:space-between;align-items:center;font:500 11px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:#8aa0bb}
+.sh b{color:var(--lime);font-weight:500}
+.sg{font:600 20px/1.15 var(--font-display);letter-spacing:-.02em}
+.lbrow{display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);font-size:13.5px;transition:transform .7s cubic-bezier(.2,.9,.2,1),background .4s}
+.lbrow.up{background:rgba(182,255,59,.14);border-color:rgba(182,255,59,.4)}
+.lbrow .rk{font:500 12px var(--font-mono);color:#7d92ad;width:16px}
+.av{width:30px;height:30px;border-radius:50%;flex:none;background:linear-gradient(135deg,var(--cyan),var(--lime))}
+.av.b{background:linear-gradient(135deg,#7aa2ff,var(--cyan))}.av.c{background:linear-gradient(135deg,#ffb36b,var(--coral))}.av.d{background:linear-gradient(135deg,var(--violet),#ff8ad6)}.av.e{background:linear-gradient(135deg,#6ff2c4,#2aa7ff)}
+.lbrow b{margin-left:auto;font:500 13px var(--font-mono);color:var(--lime)}
+.lb{display:grid;gap:8px;position:relative}
+.meter{height:7px;border-radius:7px;background:rgba(255,255,255,.1);overflow:hidden}
+.meter i{display:block;height:100%;width:var(--w);border-radius:7px;background:linear-gradient(90deg,var(--cyan),var(--lime))}
+.scr.on .meter i{animation:grow 1.2s .2s cubic-bezier(.2,.8,.2,1) both}
+@keyframes grow{from{transform:scaleX(0);transform-origin:left}}
+.mini-c{padding:14px;border-radius:18px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08);display:grid;gap:9px}
+.mini-c small{color:#8aa0bb;font-size:12px}
+.badges{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.bdg{aspect-ratio:1;border-radius:20px;display:grid;place-items:center;font-size:26px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);position:relative}
+.bdg.on{background:linear-gradient(135deg,rgba(0,207,255,.3),rgba(182,255,59,.3));border-color:rgba(182,255,59,.5);box-shadow:0 0 30px -6px rgba(182,255,59,.5)}
+.bdg:not(.on){opacity:.4;filter:grayscale(1)}
+.bub{max-width:88%;padding:11px 14px;border-radius:16px;font-size:13px;line-height:1.45}
+.bub.g{background:rgba(255,255,255,.09);border-bottom-left-radius:4px}
+.bub.m{margin-left:auto;background:linear-gradient(135deg,var(--cyan),#35e0c8);color:#00141d;border-bottom-right-radius:4px}
+.typing{display:inline-flex;gap:4px;padding:12px 14px;border-radius:16px;background:rgba(255,255,255,.09);width:fit-content}
+.typing i{width:6px;height:6px;border-radius:50%;background:#8aa0bb;animation:dot 1.2s infinite}.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+@keyframes dot{40%{transform:translateY(-4px);background:var(--cyan)}}
+.score{display:grid;place-items:center;padding:6px 0}
+.ring{width:150px;height:150px;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:12;stroke-linecap:round}
+.ring .bg{stroke:rgba(255,255,255,.1)}.ring .fg{stroke:url(#rg);stroke-dasharray:377;stroke-dashoffset:377}
+.scr.on .ring .fg{animation:ringin 1.4s .2s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes ringin{to{stroke-dashoffset:var(--off,60)}}
+.ringnum{position:absolute;font:600 32px var(--font-display);letter-spacing:-.03em}
+.pos{position:relative;display:grid;place-items:center}
+.float{position:absolute;z-index:6;border-radius:20px;padding:14px 16px;background:color-mix(in srgb,var(--solid) 78%,transparent);border:1px solid var(--line-2);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 30px 60px -28px rgba(0,0,0,.8);transform:translateZ(60px)}
+.fl1{left:-12%;top:16%;animation:bob 7s ease-in-out infinite}
+.fl2{right:-8%;top:44%;animation:bob 8s -2s ease-in-out infinite}
+.fl3{left:-6%;bottom:12%;animation:bob 9s -4s ease-in-out infinite}
+@keyframes bob{50%{translate:0 -12px}}
+.big{font:600 38px/1 var(--font-display);letter-spacing:-.04em;color:var(--lime)}
+.cap{font-size:12px;color:var(--muted);max-width:19ch;line-height:1.35}
+.fl3 .st{display:flex;gap:4px;font-size:20px;color:var(--lime)}
+@media(max-width:1000px){.hero .wrap{grid-template-columns:1fr}.stage{min-height:560px}}
+@media(max-width:520px){.stage{min-height:520px}.fl1{left:-2%}.fl2{right:-2%;top:46%}.fl3{display:none}.hero{min-height:0}}
+
+/* trust + marquee */
+.trust{padding-block:0 clamp(48px,6vw,80px)}
+.trust-g{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.tc{display:flex;gap:18px;align-items:center;padding:24px}
+.tc .ic{width:54px;height:54px;border-radius:16px;display:grid;place-items:center;flex:none;background:linear-gradient(135deg,color-mix(in srgb,var(--cyan) 25%,transparent),color-mix(in srgb,var(--lime) 18%,transparent));border:1px solid var(--line-2);color:var(--cyan)}
+.tc .k{font:500 11px var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--cyan)}
+.tc .v{font:500 16px/1.35 var(--font-display);margin-top:6px;letter-spacing:-.01em}
+@media(max-width:860px){.trust-g{grid-template-columns:1fr}}
+.marq{overflow:hidden;border-block:1px solid var(--line);padding-block:22px;mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);-webkit-mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent)}
+.mtrack{display:flex;gap:14px;width:max-content;animation:slide 60s linear infinite}
+.marq:hover .mtrack{animation-play-state:paused}
+@keyframes slide{to{transform:translateX(-50%)}}
+.aw{display:flex;align-items:center;gap:12px;padding:14px 22px;border-radius:999px;border:1px solid var(--line-2);background:var(--panel);font-size:15px;white-space:nowrap}
+.aw::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:0 0 14px var(--lime)}
 
 /* tools */
-.tools{background:var(--bg-2);border-block:1px solid var(--line)}
-.tool-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.tool{display:flex;flex-direction:column;justify-content:space-between;gap:48px;min-height:240px;border-radius:var(--r);padding:32px;border:1px solid var(--line-2);position:relative;overflow:hidden;transition:transform .25s,border-color .25s}
-.tool:hover{transform:translateY(-4px);border-color:var(--accent)}
-.tool.a{background:radial-gradient(90% 120% at 100% 0,var(--glow),transparent 60%),var(--surface)}
-.tool.b{background:radial-gradient(90% 120% at 100% 0,color-mix(in srgb,var(--lime) 22%,transparent),transparent 60%),var(--surface)}
-.tool h3{font-size:clamp(20px,2.2vw,28px);max-width:16ch}
-.tool .go{width:52px;height:52px;border-radius:50%;border:1px solid var(--line-2);display:grid;place-items:center;font-size:20px;align-self:flex-end;transition:.25s}
-.tool:hover .go{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-.awards{display:flex;flex-wrap:wrap;gap:10px;margin-top:40px}
-.award{border:1px solid var(--line-2);border-radius:999px;padding:10px 18px;font-size:14px;color:var(--muted);display:flex;gap:10px;align-items:center}
-.award::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--lime);flex:none}
-@media(max-width:760px){.tool-grid{grid-template-columns:1fr}}
+.tools-g{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.tool{display:grid;gap:28px;padding:34px;min-height:430px;align-content:space-between;transition:transform .35s}
+.tool:hover{transform:translateY(-6px)}
+.tool h3{font-size:clamp(22px,2.4vw,32px);max-width:15ch;letter-spacing:-.025em}
+.tool .vis{height:170px;border-radius:20px;background:color-mix(in srgb,var(--bg) 60%,transparent);border:1px solid var(--line);padding:18px;display:flex;align-items:flex-end;gap:10px;overflow:hidden;position:relative}
+.vis .col{flex:1;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,var(--cyan),color-mix(in srgb,var(--cyan) 20%,transparent));height:var(--h);transform-origin:bottom;animation:rise 1.4s cubic-bezier(.2,.8,.2,1) both}
+.vis .col.l{background:linear-gradient(180deg,var(--lime),color-mix(in srgb,var(--lime) 20%,transparent))}
+@keyframes rise{from{transform:scaleY(.05)}}
+.funnel{align-items:center;flex-direction:column;justify-content:center;gap:8px}
+.funnel i{display:block;height:28px;border-radius:9px;background:linear-gradient(90deg,var(--lime),color-mix(in srgb,var(--lime) 25%,transparent));width:var(--w);position:relative;animation:grow 1.2s cubic-bezier(.2,.8,.2,1) both}
+.funnel i:nth-child(2){animation-delay:.12s}.funnel i:nth-child(3){animation-delay:.24s}.funnel i:nth-child(4){animation-delay:.36s}
+.tool .row{display:flex;justify-content:space-between;align-items:center;gap:16px}
+.go{width:56px;height:56px;border-radius:50%;border:1px solid var(--line-2);display:grid;place-items:center;flex:none;transition:.3s;font-size:22px}
+.tool:hover .go{background:var(--cyan);color:var(--on-cyan);border-color:var(--cyan);transform:rotate(-45deg)}
+.lbline{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;justify-content:space-between;margin-top:20px;padding:22px 28px}
+.lbline p{max-width:46ch;font:500 clamp(16px,1.7vw,22px)/1.3 var(--font-display);letter-spacing:-.02em}
+.lbline .st{display:flex;gap:28px;flex-wrap:wrap;align-items:center}
+.lbline .big{font-size:clamp(34px,4vw,52px)}
+@media(max-width:860px){.tools-g{grid-template-columns:1fr}.tool{min-height:0}}
 
-/* inline lead */
-.lead-strip .box{display:grid;grid-template-columns:1fr 1.1fr;gap:clamp(24px,4vw,56px);align-items:center;border-radius:28px;padding:clamp(28px,5vw,56px);border:1px solid var(--line-2);background:radial-gradient(60% 100% at 0 0,var(--accent-soft),transparent 70%),var(--surface)}
+/* lead strip */
+.lead-strip .box{display:grid;grid-template-columns:1fr 1.05fr;gap:clamp(28px,4vw,64px);align-items:center;padding:clamp(28px,5vw,64px)}
+.lead-strip .box>*{min-width:0}
 form{display:grid;gap:14px}
-.field{display:grid;gap:6px}
-input[type=text],input[type=email],input[type=tel],select{width:100%;font:400 16px var(--font-body);color:var(--fg);background:var(--bg);border:1px solid var(--line-2);border-radius:14px;padding:16px 18px;transition:border-color .2s}
-input::placeholder{color:var(--muted)}
-input:focus,select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 4px var(--accent-soft)}
-.chk{display:flex;gap:12px;align-items:flex-start;font-size:13px;color:var(--muted);line-height:1.45}
-.chk input{margin-top:2px;accent-color:var(--accent);width:18px;height:18px;flex:none}
-.chk a{color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+input[type=text],input[type=email],input[type=tel]{width:100%;font:400 16px var(--font-body);color:var(--fg);background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--line-2);border-radius:16px;padding:18px 20px;transition:.25s}
+input::placeholder{color:var(--dim)}
+input:focus{border-color:var(--cyan);outline:none;box-shadow:0 0 0 4px color-mix(in srgb,var(--cyan) 18%,transparent)}
+.chk{display:flex;gap:12px;align-items:flex-start;font-size:13px;color:var(--muted);line-height:1.5}
+.chk input{margin-top:3px;accent-color:var(--cyan);width:18px;height:18px;flex:none}
+.chk a{color:var(--cyan);text-decoration:underline;text-underline-offset:3px}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .seg label{display:block}.seg input{position:absolute;opacity:0}
-.seg span{display:block;text-align:center;padding:14px 8px;border:1px solid var(--line-2);border-radius:12px;font-size:14px;cursor:pointer;color:var(--muted);transition:.2s}
-.seg input:checked+span{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-.seg input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
-@media(max-width:860px){.lead-strip .box{grid-template-columns:1fr}}
+.seg span{display:block;text-align:center;padding:15px 8px;border:1px solid var(--line-2);border-radius:14px;font-size:14px;cursor:pointer;color:var(--muted);transition:.25s;background:color-mix(in srgb,var(--bg) 55%,transparent)}
+.seg input:checked+span{background:var(--cyan);color:var(--on-cyan);border-color:var(--cyan);font-weight:600}
+.seg input:focus-visible+span{outline:2px solid var(--cyan);outline-offset:2px}
+@media(max-width:900px){.lead-strip .box{grid-template-columns:1fr}}
 
-/* demo / features bento */
-.video{position:relative;border-radius:28px;overflow:hidden;border:1px solid var(--line-2);aspect-ratio:16/8;background:radial-gradient(60% 80% at 70% 20%,var(--glow),transparent 70%),linear-gradient(160deg,var(--surface-2),var(--bg));display:grid;place-items:center;margin-bottom:20px}
-.video::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:48px 48px;opacity:.45}
-.play{position:relative;width:92px;height:92px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:30px;box-shadow:0 0 0 14px var(--accent-soft),0 0 60px var(--glow);cursor:pointer;border:0;transition:transform .2s}
-.play:hover{transform:scale(1.06)}
-.video .cap{position:absolute;left:28px;bottom:24px;right:28px;display:flex;flex-wrap:wrap;gap:8px 24px;justify-content:space-between;align-items:end}
-.video .cap b{font:400 clamp(17px,2vw,24px)/1.2 var(--font-display)}
-.video .cap span{color:var(--muted);font-size:14px}
-.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:16px}
-.bento .card{display:grid;gap:12px;align-content:start;transition:border-color .25s,transform .25s}
-.bento .card:hover{border-color:var(--accent);transform:translateY(-3px)}
-.bento .c1{grid-column:span 4}.bento .c2{grid-column:span 2}.bento .c3{grid-column:span 3}.bento .c4{grid-column:span 3}
-.bento p{color:var(--muted)}
-.ico{width:44px;height:44px;border-radius:13px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:20px;border:1px solid var(--line-2)}
-.mini{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
-.mini i{font-style:normal;font-size:12px;border:1px solid var(--line-2);border-radius:8px;padding:6px 10px;color:var(--muted)}
-@media(max-width:860px){.bento{grid-template-columns:1fr}.bento .card{grid-column:auto!important}}
+/* video + bento */
+.video{position:relative;border-radius:32px;overflow:hidden;border:1px solid var(--line-2);aspect-ratio:16/8;background:#050912;display:grid;place-items:center;margin-bottom:20px;isolation:isolate}
+.video canvas{position:absolute;inset:0;width:100%;height:100%;z-index:-1}
+.play{width:104px;height:104px;border-radius:50%;border:0;background:linear-gradient(135deg,var(--cyan),var(--lime));color:var(--on-cyan);font-size:30px;cursor:pointer;display:grid;place-items:center;position:relative;transition:transform .3s;box-shadow:0 0 70px var(--glow)}
+.play::before,.play::after{content:"";position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--cyan);animation:ping 2.8s ease-out infinite}
+.play::after{animation-delay:1.4s}
+@keyframes ping{to{transform:scale(2);opacity:0}}
+.play:hover{transform:scale(1.08)}
+.vcap{position:absolute;left:32px;right:32px;bottom:26px;display:flex;flex-wrap:wrap;gap:6px 24px;justify-content:space-between;align-items:end}
+.vcap b{font:500 clamp(18px,2.4vw,30px)/1.15 var(--font-display);letter-spacing:-.02em;color:#fff}
+.vcap span{color:#b6c3d4;font-size:14px;max-width:34ch}
+.scrub{position:absolute;left:32px;right:32px;bottom:12px;height:3px;border-radius:3px;background:rgba(255,255,255,.2)}
+.scrub i{display:block;height:100%;width:32%;background:linear-gradient(90deg,var(--cyan),var(--lime));border-radius:3px}
+.vbadge{position:absolute;top:22px;left:24px;font:500 11px var(--font-mono);letter-spacing:.12em;padding:7px 12px;border-radius:999px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.2);color:#fff;display:flex;gap:8px;align-items:center}
+.vbadge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--coral);animation:blink 1.4s infinite}
+@keyframes blink{50%{opacity:.2}}
+.bento{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.bento>*{min-width:0}
+.bx{padding:30px;display:grid;gap:14px;align-content:start;min-height:340px}
+.bx p{color:var(--muted)}
+.b1{grid-column:span 7}.b2{grid-column:span 5}.b3{grid-column:span 5}.b4{grid-column:span 7}
+.bx .ui{margin-top:auto;border-radius:18px;background:color-mix(in srgb,var(--bg) 62%,transparent);border:1px solid var(--line);padding:14px;display:grid;gap:8px}
+.cour{display:flex;gap:10px;align-items:center;padding:10px 12px;border-radius:12px;background:var(--panel-2);border:1px solid var(--line);font-size:13px}
+.cour i{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--cyan),var(--violet));flex:none}
+.cour:nth-child(2) i{background:linear-gradient(135deg,var(--lime),var(--cyan))}.cour:nth-child(3) i{background:linear-gradient(135deg,var(--coral),#ffb36b)}
+.cour .pr{margin-left:auto;font:500 12px var(--font-mono);color:var(--lime)}
+.cour.drag{transform:rotate(-1.4deg) translateX(8px);box-shadow:0 20px 40px -18px #000;border-color:var(--cyan)}
+.post{display:grid;gap:10px;padding:12px;border-radius:14px;background:var(--panel-2);border:1px solid var(--line);font-size:13px}
+.post .ln{height:8px;border-radius:6px;background:var(--line-2)}
+.like{justify-self:start;display:inline-flex;gap:8px;align-items:center;font:500 13px var(--font-mono);padding:8px 14px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--fg);cursor:pointer;transition:.25s}
+.like[aria-pressed=true]{background:color-mix(in srgb,var(--coral) 18%,transparent);border-color:var(--coral);color:var(--coral)}
+.like[aria-pressed=true] span{animation:pop .4s}
+@keyframes pop{50%{transform:scale(1.5)}}
+.gauge{display:grid;place-items:center;position:relative;padding:4px 0}
+.gauge svg{width:170px;height:96px;overflow:visible}
+.gauge .t{stroke:var(--line-2);fill:none;stroke-width:12;stroke-linecap:round}
+.gauge .v{stroke:url(#gg);fill:none;stroke-width:12;stroke-linecap:round;stroke-dasharray:236;stroke-dashoffset:236}
+.vis-in .gauge .v{animation:gv 1.6s .2s cubic-bezier(.2,.8,.2,1) forwards}
+@keyframes gv{to{stroke-dashoffset:58}}
+.gauge b{position:absolute;bottom:2px;font:600 24px var(--font-display);letter-spacing:-.03em}
+.rwd{display:flex;gap:10px;flex-wrap:wrap}
+.rwd i{font-style:normal;width:46px;height:46px;border-radius:15px;display:grid;place-items:center;font-size:21px;background:linear-gradient(135deg,color-mix(in srgb,var(--cyan) 30%,transparent),color-mix(in srgb,var(--lime) 30%,transparent));border:1px solid var(--line-2);animation:floaty 4s ease-in-out infinite}
+.rwd i:nth-child(2){animation-delay:-.7s}.rwd i:nth-child(3){animation-delay:-1.4s}.rwd i:nth-child(4){animation-delay:-2.1s;opacity:.4;filter:grayscale(1)}
+@keyframes floaty{50%{translate:0 -6px}}
+@media(max-width:900px){.bento{grid-template-columns:1fr}.bento>*{grid-column:auto!important}.bx{min-height:0}}
 
 /* proof */
-.proof{background:var(--bg-2);border-block:1px solid var(--line)}
-.proof-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:clamp(24px,4vw,56px);align-items:center}
-.stat{font:300 clamp(72px,12vw,152px)/.9 var(--font-display);letter-spacing:-.04em;background:linear-gradient(180deg,var(--fg),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
-.proof .actions{display:flex;gap:14px;flex-wrap:wrap;margin-top:28px}
-.community{border-radius:var(--r);padding:32px;border:1px solid var(--line-2);background:radial-gradient(80% 100% at 100% 0,color-mix(in srgb,var(--lime) 18%,transparent),transparent 60%),var(--surface);display:grid;gap:16px}
-@media(max-width:860px){.proof-grid{grid-template-columns:1fr}}
+.proof-g{display:grid;grid-template-columns:1.15fr .85fr;gap:20px;align-items:stretch}
+.proof-g>*{min-width:0}
+.numcard{padding:clamp(28px,4vw,56px);display:grid;gap:24px;align-content:space-between}
+.num{font:600 clamp(96px,17vw,240px)/.85 var(--font-display);letter-spacing:-.06em;background:linear-gradient(180deg,var(--fg) 20%,var(--cyan) 70%,var(--lime));-webkit-background-clip:text;background-clip:text;color:transparent}
+.numcard h3{font-size:clamp(20px,2.4vw,30px);max-width:22ch}
+.comm{padding:34px;display:grid;gap:18px;align-content:space-between;background:linear-gradient(160deg,color-mix(in srgb,var(--lime) 14%,var(--panel)),var(--panel))}
+.comm h3{font-size:clamp(22px,2.4vw,32px)}
+.acts{display:flex;gap:12px;flex-wrap:wrap}
+@media(max-width:900px){.proof-g{grid-template-columns:1fr}}
 
 /* 3 days */
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px}
-.steps .card{display:grid;gap:10px;align-content:start}
-.steps .card p{color:var(--muted)}
-.days{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,4vw,56px);align-items:start}
-.sticky{position:sticky;top:96px}
-.feat{display:grid;gap:14px}
-.feat .card{display:grid;gap:8px;padding:24px 26px}
-.feat .card p{color:var(--muted)}
-@media(max-width:900px){.days{grid-template-columns:1fr}.sticky{position:static}.steps{grid-template-columns:1fr}}
+.days{display:grid;grid-template-columns:.9fr 1.1fr;gap:clamp(28px,5vw,80px);align-items:start}
+.days>*{min-width:0}
+.sticky{position:sticky;top:120px}
+.sbox{margin-top:30px;display:grid;gap:12px}
+.sbox .panel{padding:22px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px}
+.feat{display:grid;gap:14px;position:relative}
+.feat::before{content:"";position:absolute;left:26px;top:30px;bottom:30px;width:2px;background:linear-gradient(var(--cyan),var(--lime),transparent)}
+.fc{padding:26px 28px 26px 74px;display:grid;gap:8px}
+.fc .dot{position:absolute;left:17px;top:30px;width:20px;height:20px;border-radius:50%;background:var(--bg);border:2px solid var(--cyan);box-shadow:0 0 18px var(--glow)}
+.fc p{color:var(--muted)}
+@media(max-width:900px){.days{grid-template-columns:1fr}.sticky{position:static}}
 
 /* courses */
-.courses{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
-.course{display:flex;flex-direction:column;gap:12px;border-radius:var(--r);border:1px solid var(--line);background:var(--surface);padding:20px;transition:.25s}
-.course:hover{border-color:var(--accent);transform:translateY(-4px)}
-.cover{aspect-ratio:4/3;border-radius:14px;background:var(--g);position:relative;overflow:hidden}
-.cover::after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 80% 20%,rgba(255,255,255,.35),transparent 45%)}
-.course h3{font-size:15px;line-height:1.35}
-.course p{font-size:13.5px;color:var(--muted)}
-.course .link{margin-top:auto;font-size:14px}
-@media(max-width:1100px){.courses{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:700px){.courses{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:12px;padding-bottom:12px}.course{flex:0 0 74%;scroll-snap-align:start}}
+.rail{display:flex;gap:16px;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:18px;scrollbar-width:thin}
+.course{flex:0 0 min(320px,80vw);scroll-snap-align:start;padding:18px;display:flex;flex-direction:column;gap:14px;transition:transform .35s}
+.course:hover{transform:translateY(-8px)}
+.cover{aspect-ratio:4/3;border-radius:18px;position:relative;overflow:hidden;background:var(--g)}
+.cover::before{content:"";position:absolute;inset:-30%;background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.55),transparent 40%),radial-gradient(circle at 80% 80%,rgba(0,0,0,.35),transparent 50%);animation:drift 9s ease-in-out infinite alternate}
+@keyframes drift{to{transform:translate(12%,8%) rotate(8deg)}}
+.cover::after{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.12) 1px,transparent 1px);background-size:28px 28px}
+.course h3{font-size:16px;line-height:1.35}
+.course p{font-size:14px;color:var(--muted)}
+.course .more{margin-top:auto;font-size:14px}
 
 /* outsourcing */
-.out{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,4vw,56px)}
-.save{display:flex;align-items:baseline;gap:14px;margin:8px 0 4px}
-.save b{font:300 clamp(56px,8vw,96px)/1 var(--font-display);color:var(--lime);letter-spacing:-.03em}
-.save span{color:var(--muted);max-width:14ch}
+.out{display:grid;grid-template-columns:1fr 1fr;gap:clamp(28px,5vw,80px);align-items:center}
+.out>*{min-width:0}
+.pct{font:600 clamp(110px,18vw,260px)/.8 var(--font-display);letter-spacing:-.07em;background:linear-gradient(180deg,var(--lime),color-mix(in srgb,var(--lime) 30%,transparent));-webkit-background-clip:text;background-clip:text;color:transparent;margin:34px 0 8px}
+.pctl{font-size:20px;color:var(--muted);max-width:18ch}
 .tick{list-style:none;padding:0;margin:0;display:grid;gap:12px}
-.tick li{display:flex;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
-.tick li::before{content:"✓";color:var(--accent);font-weight:600;flex:none}
-@media(max-width:860px){.out{grid-template-columns:1fr}}
+.tick li{display:flex;gap:16px;padding:20px 22px;position:relative}
+.tick li::before{content:"";flex:none;width:22px;height:22px;border-radius:7px;margin-top:2px;background:var(--lime);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat}
+@media(max-width:900px){.out{grid-template-columns:1fr}}
 
-/* reliability + about */
+/* reliability */
 .rel{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-.rel .card{display:grid;gap:10px;align-content:start}
-.rel .k{font:500 12px/1 var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.rel .panel{padding:28px;display:grid;gap:14px;align-content:start;min-height:260px}
+.rel .ic{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;border:1px solid var(--line-2);color:var(--cyan);background:color-mix(in srgb,var(--cyan) 12%,transparent)}
 .rel p{color:var(--muted);font-size:15px}
 @media(max-width:1000px){.rel{grid-template-columns:1fr 1fr}}@media(max-width:600px){.rel{grid-template-columns:1fr}}
-.about{background:var(--bg-2);border-block:1px solid var(--line)}
-.about-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:clamp(24px,4vw,64px);align-items:start}
-.checks{list-style:none;margin:24px 0 0;padding:0;display:grid;gap:12px}
-.checks li{display:flex;gap:12px}.checks li::before{content:"✓";color:var(--lime);flex:none;font-weight:600}
-.cert{border-radius:var(--r);border:1px solid var(--line-2);background:var(--surface);padding:28px;display:grid;gap:14px}
-.cert .no{font:500 13px/1 var(--font-body);letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
-.cert dl{margin:0;display:grid;gap:12px}.cert dt{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}.cert dd{margin:2px 0 0}
-.stack{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:40px}
-.stack div{border:1px solid var(--line);border-radius:14px;padding:18px;background:var(--surface)}
-.stack b{display:block;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-bottom:8px;font-weight:500}
-.stack span{font:400 13.5px/1.5 ui-monospace,'SFMono-Regular',Menlo,monospace;color:var(--muted)}
-@media(max-width:860px){.about-grid{grid-template-columns:1fr}.stack{grid-template-columns:1fr 1fr}}@media(max-width:520px){.stack{grid-template-columns:1fr}}
+
+/* about + terminal */
+.about-g{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,4vw,64px);align-items:start}
+.about-g>*{min-width:0}
+.checks{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:12px}
+.checks li{display:flex;gap:14px;align-items:center;padding:16px 20px;border-radius:16px;border:1px solid var(--line);background:var(--panel)}
+.checks li::before{content:"✓";color:var(--on-cyan);background:var(--lime);width:24px;height:24px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:13px;flex:none}
+.cert{padding:30px;display:grid;gap:18px}
+.cert .no{font:500 12px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--lime)}
+.cert dl{margin:0;display:grid;gap:14px}.cert dt{font:500 11px var(--font-mono);color:var(--dim);text-transform:uppercase;letter-spacing:.12em}.cert dd{margin:3px 0 0}
+.term{margin-top:40px;border-radius:22px;overflow:hidden;border:1px solid var(--line-2);background:#050912;box-shadow:0 40px 80px -40px #000;color:#cfe0f3}
+.term .bar{display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);font:500 12px var(--font-mono);color:#7d92ad}
+.term .bar i{width:11px;height:11px;border-radius:50%;background:#ff5f57}.term .bar i:nth-child(2){background:#febc2e}.term .bar i:nth-child(3){background:#28c840}
+.term .bar span{margin-left:10px}
+.tgrid{display:grid;grid-template-columns:repeat(3,1fr)}
+.tcell{padding:22px 22px;border-right:1px solid rgba(255,255,255,.07);border-bottom:1px solid rgba(255,255,255,.07);font:400 13.5px/1.7 var(--font-mono)}
+.tcell:nth-child(3n){border-right:0}.tcell:nth-last-child(-n+3){border-bottom:0}
+.tcell b{display:block;font-weight:500;color:#00cfff;margin-bottom:6px}
+.tcell b::before{content:"$ ";color:#b6ff3b}
+.tcell span{color:#9fb3ca}
+.cur{display:inline-block;width:8px;height:15px;background:#b6ff3b;vertical-align:-2px;animation:blink 1s steps(1) infinite;margin-left:4px}
+@media(max-width:900px){.about-g{grid-template-columns:1fr}.tgrid{grid-template-columns:1fr 1fr}.tcell:nth-child(3n){border-right:1px solid rgba(255,255,255,.07)}.tcell:nth-child(2n){border-right:0}.tcell:nth-last-child(-n+3){border-bottom:1px solid rgba(255,255,255,.07)}.tcell:nth-last-child(-n+2){border-bottom:0}}
+@media(max-width:520px){.tgrid{grid-template-columns:1fr}.tcell{border-right:0!important;border-bottom:1px solid rgba(255,255,255,.07)!important}.tcell:last-child{border-bottom:0!important}}
 
 /* pricing */
-.price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;align-items:stretch}
-.plan{display:flex;flex-direction:column;gap:20px;border-radius:24px;padding:32px;border:1px solid var(--line-2);background:var(--surface);position:relative}
-.plan.hot{background:radial-gradient(100% 70% at 50% 0,var(--glow),transparent 70%),var(--surface-2);border-color:var(--accent);transform:translateY(-12px)}
-.plan .tag{position:absolute;top:-14px;left:28px;background:var(--lime);color:var(--lime-ink);font-size:12px;font-weight:600;padding:7px 14px;border-radius:999px}
-.plan .nm{font:400 22px/1.2 var(--font-display)}
-.plan .desc{color:var(--muted);font-size:15px;min-height:72px}
-.plan .pr{font:400 clamp(32px,3.4vw,42px)/1 var(--font-display);letter-spacing:-.02em}
-.plan .pr small{display:block;font:400 13px var(--font-body);color:var(--muted);letter-spacing:0;margin-bottom:8px}
+.price-g{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:stretch}
+.plan{padding:34px;display:flex;flex-direction:column;gap:22px;min-height:430px}
+.plan .nm{font:500 24px/1.2 var(--font-display);letter-spacing:-.02em}
+.plan .desc{color:var(--muted);font-size:15px;min-height:70px}
+.plan .pr{font:600 clamp(34px,3.6vw,48px)/1 var(--font-display);letter-spacing:-.04em}
+.plan .pr small{display:block;font:400 13px var(--font-body);letter-spacing:0;color:var(--muted);margin-bottom:10px}
 .plan .btn{margin-top:auto;justify-content:center}
-.pnote{display:flex;flex-wrap:wrap;gap:12px 28px;justify-content:space-between;align-items:center;margin-top:36px;color:var(--muted)}
-@media(max-width:900px){.price-grid{grid-template-columns:1fr}.plan.hot{transform:none}.plan .desc{min-height:0}}
+.plan.hot{border:1px solid transparent;background:linear-gradient(var(--solid),var(--solid)) padding-box,linear-gradient(135deg,var(--cyan),var(--violet),var(--lime)) border-box;box-shadow:0 40px 100px -40px var(--glow);transform:translateY(-14px)}
+.plan.hot .pr{background:linear-gradient(100deg,var(--cyan),var(--lime));-webkit-background-clip:text;background-clip:text;color:transparent}
+.plan .badge{position:absolute;top:18px;right:18px;background:var(--lime);color:#0b1400;font:600 12px var(--font-body);padding:8px 14px;border-radius:999px}
+.pnote{display:flex;flex-wrap:wrap;gap:14px 30px;justify-content:space-between;align-items:center;margin-top:34px;color:var(--muted)}
+.head .btns{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+@media(max-width:960px){.price-g{grid-template-columns:1fr}.plan.hot{transform:none}.plan{min-height:0}.plan .desc{min-height:0}}
 
 /* reviews */
-.reviews{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.rev{display:flex;flex-direction:column;gap:20px;justify-content:space-between}
-.rev q{quotes:none;font-size:15.5px;line-height:1.6}
-.rev q em{font-style:normal;background:linear-gradient(transparent 62%,var(--accent-soft) 62%);color:var(--fg)}
-.who{display:flex;gap:12px;align-items:center}
-.who b{display:block;font-weight:500;font-size:15px}.who span{font-size:13px;color:var(--muted);line-height:1.35;display:block}
-.reviews .rev:first-child{grid-column:span 2}
-@media(max-width:900px){.reviews{grid-template-columns:1fr}.reviews .rev:first-child{grid-column:auto}}
+.rv-rail{display:flex;gap:16px;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:18px;scrollbar-width:thin}
+.rev{flex:0 0 min(460px,86vw);scroll-snap-align:start;padding:32px;display:flex;flex-direction:column;gap:26px;justify-content:space-between}
+.rev q{quotes:none;font-size:17px;line-height:1.6}
+.rev q::before{content:"“";display:block;font:600 70px/.6 var(--font-display);color:var(--cyan);margin-bottom:10px}
+.rev q em{font-style:normal;color:var(--lime)}
+.who{display:flex;gap:14px;align-items:center}
+.who .av{width:46px;height:46px}
+.who b{display:block;font-weight:500}.who span{font-size:13px;color:var(--muted);line-height:1.35;display:block}
 
 /* cases */
 .cases{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.case{display:flex;flex-direction:column;gap:16px;border-radius:var(--r);border:1px solid var(--line);padding:26px;background:var(--surface);transition:.25s;min-height:240px}
-.case:hover{border-color:var(--accent);transform:translateY(-4px)}
-.case h3{font-size:16px}
+.case{padding:28px;display:flex;flex-direction:column;gap:16px;min-height:270px;transition:transform .35s}
+.case:hover{transform:translateY(-6px)}
+.case h3{font-size:17px}
 .case p{color:var(--muted);font-size:15px}
-.case .link{margin-top:auto}
-@media(max-width:900px){.cases{grid-template-columns:1fr 1fr}}@media(max-width:580px){.cases{grid-template-columns:1fr}}
+.case .more{margin-top:auto}
+@media(max-width:960px){.cases{grid-template-columns:1fr 1fr}}@media(max-width:600px){.cases{grid-template-columns:1fr}}
 
-/* media */
-.media{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border-top:1px solid var(--line)}
-.pub{padding:26px 26px 26px 0;border-bottom:1px solid var(--line);display:grid;gap:10px;align-content:start;transition:background .2s}
-.pub:nth-child(3n+2),.pub:nth-child(3n){padding-left:26px;border-left:1px solid var(--line)}
-.pub .src{font:500 12px/1 var(--font-body);letter-spacing:.14em;color:var(--accent)}
-.pub h3{font-size:16px;line-height:1.35}.pub p{font-size:14px;color:var(--muted)}
-.pub:hover h3{color:var(--accent)}
-@media(max-width:900px){.media{grid-template-columns:1fr 1fr}.pub:nth-child(n){padding:22px 0;border-left:0}.pub:nth-child(2n){padding-left:22px;border-left:1px solid var(--line)}}
-@media(max-width:560px){.media{grid-template-columns:1fr}.pub:nth-child(n){padding:22px 0;border-left:0}}
+/* media list */
+.pubs{border-top:1px solid var(--line)}
+.pub{display:grid;grid-template-columns:190px 1fr 40px;gap:24px;align-items:center;padding:28px 12px;border-bottom:1px solid var(--line);transition:.3s;position:relative}
+.pub:hover{background:linear-gradient(90deg,color-mix(in srgb,var(--cyan) 10%,transparent),transparent);padding-left:26px}
+.pub .src{font:500 12px var(--font-mono);letter-spacing:.14em;color:var(--cyan)}
+.pub h3{font-size:clamp(16px,1.7vw,22px);line-height:1.3}
+.pub p{font-size:14px;color:var(--muted);margin-top:8px;max-width:70ch}
+.pub .ar{font-size:24px;color:var(--dim);transition:.3s;justify-self:end}
+.pub:hover .ar{color:var(--lime);transform:translate(4px,-4px)}
+@media(max-width:700px){.pub{grid-template-columns:1fr 28px;gap:8px 12px}.pub .src{grid-column:1/-1}}
 
 /* faq */
-.faq{display:grid;grid-template-columns:.8fr 1.2fr;gap:clamp(24px,4vw,64px)}
-details{border-bottom:1px solid var(--line);padding:6px 0}
-summary{list-style:none;cursor:pointer;padding:20px 0;font-weight:500;font-size:17px;display:flex;justify-content:space-between;gap:20px;align-items:center}
+.faq-g{display:grid;grid-template-columns:.8fr 1.2fr;gap:clamp(28px,5vw,80px)}
+.faq-g>*{min-width:0}
+details{border-bottom:1px solid var(--line)}
+summary{list-style:none;cursor:pointer;padding:24px 0;font:500 clamp(16px,1.5vw,19px)/1.35 var(--font-body);display:flex;justify-content:space-between;gap:20px;align-items:center;transition:color .2s}
+summary:hover{color:var(--cyan)}
 summary::-webkit-details-marker{display:none}
-summary::after{content:"+";font-size:26px;color:var(--accent);transition:transform .25s;line-height:1;flex:none}
-details[open] summary::after{transform:rotate(45deg)}
-details .ans{padding:0 0 22px;color:var(--muted);display:grid;gap:10px;max-width:66ch}
-@media(max-width:860px){.faq{grid-template-columns:1fr}}
+summary::after{content:"+";flex:none;width:36px;height:36px;border-radius:12px;border:1px solid var(--line-2);display:grid;place-items:center;font-size:22px;color:var(--cyan);transition:.3s;line-height:1}
+details[open] summary::after{transform:rotate(45deg);background:var(--cyan);color:var(--on-cyan)}
+.ans{padding:0 0 26px;color:var(--muted);display:grid;gap:10px;max-width:68ch}
+@media(max-width:900px){.faq-g{grid-template-columns:1fr}}
 
-/* final cta */
-.final .box{border-radius:32px;padding:clamp(32px,6vw,72px);position:relative;overflow:hidden;border:1px solid var(--line-2);background:radial-gradient(70% 120% at 100% 100%,var(--glow),transparent 65%),radial-gradient(50% 80% at 0 0,color-mix(in srgb,var(--lime) 14%,transparent),transparent 70%),var(--surface);display:grid;grid-template-columns:1.1fr .9fr;gap:clamp(24px,4vw,56px);align-items:center}
-.final h2{font-size:clamp(26px,3.8vw,48px)}
-@media(max-width:860px){.final .box{grid-template-columns:1fr}}
+/* final */
+.final{padding-block:clamp(48px,7vw,100px)}
+.final .box{position:relative;padding:clamp(32px,6vw,84px);display:grid;grid-template-columns:1.05fr .95fr;gap:clamp(28px,4vw,64px);align-items:center;border-radius:40px}
+.final .box>*{min-width:0}
+.final canvas{position:absolute;inset:0;width:100%;height:100%;z-index:-1;border-radius:inherit}
+.final h2{font-size:clamp(30px,4.6vw,64px)}
+.final form{padding:28px;border-radius:26px;background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--line-2);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+@media(max-width:900px){.final .box{grid-template-columns:1fr}}
 
 /* footer */
-footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(--bg-2);color:var(--muted);font-size:14px}
-.foot{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:32px}
-.foot h4{margin:0 0 14px;font:500 12px/1 var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--fg)}
-.foot a{display:block;padding:5px 0}.foot a:hover{color:var(--accent)}
-.legal{margin-top:40px;padding-top:24px;border-top:1px solid var(--line);display:grid;gap:8px;font-size:13px}
+footer{border-top:1px solid var(--line);padding-block:72px 40px;background:var(--bg-2);color:var(--muted);font-size:14px;position:relative;overflow:hidden}
+.foot{display:grid;grid-template-columns:1.5fr repeat(3,1fr);gap:36px;position:relative;z-index:1}
+.foot h4{margin:0 0 16px;font:500 12px var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--fg)}
+.foot a{display:block;padding:6px 0;transition:.2s}.foot a:hover{color:var(--cyan);transform:translateX(4px)}
+.foot p{margin-bottom:6px}
+.legal{margin-top:48px;padding-top:26px;border-top:1px solid var(--line);display:grid;gap:8px;font-size:13px;position:relative;z-index:1}
+.giant{font:700 clamp(54px,15.5vw,230px)/.8 var(--font-display);letter-spacing:-.06em;text-align:center;margin-top:64px;background:linear-gradient(180deg,color-mix(in srgb,var(--fg) 16%,transparent),transparent 85%);-webkit-background-clip:text;background-clip:text;color:transparent;user-select:none;white-space:nowrap}
 @media(max-width:860px){.foot{grid-template-columns:1fr 1fr}}@media(max-width:520px){.foot{grid-template-columns:1fr}}
 
-/* floating contact */
+/* dock + toast */
 .dock{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:70;display:grid;gap:10px;justify-items:end}
-.dock .opts{display:none;gap:8px;justify-items:end}
-.dock.open .opts{display:grid}
-.opt{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line-2);border-radius:999px;padding:12px 18px 12px 14px;font-size:14px;box-shadow:0 14px 30px -14px rgba(0,0,0,.6)}
-.opt i{width:26px;height:26px;border-radius:50%;background:var(--accent-soft);display:grid;place-items:center;font-style:normal;color:var(--accent)}
-.fab{width:60px;height:60px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink);font-size:24px;cursor:pointer;box-shadow:0 12px 36px -8px var(--glow);position:relative}
-.fab::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid var(--accent);animation:ping 2.4s ease-out infinite}
-@keyframes ping{to{transform:scale(1.5);opacity:0}}
-.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));translate:-50% 20px;opacity:0;pointer-events:none;background:var(--fg);color:var(--bg);padding:12px 20px;border-radius:12px;font-size:14px;transition:.3s;z-index:80;max-width:calc(100vw - 32px)}
+.opts{display:none;gap:8px;justify-items:end}.dock.open .opts{display:grid}
+.opt{display:flex;align-items:center;gap:12px;background:color-mix(in srgb,var(--solid) 85%,transparent);border:1px solid var(--line-2);border-radius:999px;padding:12px 20px 12px 14px;font-size:14px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 20px 40px -20px #000;transition:.2s}
+a.opt:hover{border-color:var(--cyan);transform:translateX(-4px)}
+.opt i{width:28px;height:28px;border-radius:50%;background:color-mix(in srgb,var(--cyan) 18%,transparent);display:grid;place-items:center;font-style:normal;color:var(--cyan)}
+.fab{width:64px;height:64px;border-radius:50%;border:0;background:linear-gradient(135deg,var(--cyan),var(--lime));color:var(--on-cyan);cursor:pointer;display:grid;place-items:center;box-shadow:0 14px 40px -8px var(--glow);position:relative}
+.fab::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid var(--cyan);animation:ping 2.4s ease-out infinite}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));translate:-50% 20px;opacity:0;pointer-events:none;background:var(--fg);color:var(--bg);padding:13px 22px;border-radius:14px;font-size:14px;transition:.3s;z-index:80;max-width:calc(100vw - 32px)}
 .toast.on{opacity:1;translate:-50% 0}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+
+/* ambient light that follows the page, so lower sections are not flat */
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(46% 38% at 88% 18%,color-mix(in srgb,var(--cyan) 11%,transparent),transparent 70%),radial-gradient(40% 40% at 6% 62%,color-mix(in srgb,var(--violet) 12%,transparent),transparent 70%),radial-gradient(36% 30% at 70% 95%,color-mix(in srgb,var(--lime) 8%,transparent),transparent 70%)}
+
+/* grid items must be allowed to shrink so buttons wrap instead of clipping */
+.numcard,.comm,.bx,.cert,.rel .panel,.fc,.tool,.course,.case{grid-template-columns:minmax(0,1fr)}
+
+/* reveal: visible by default, only below-the-fold items are staged by JS */
+.rv.pre{opacity:0;transform:translateY(34px);filter:blur(6px)}
+.rv{transition:opacity .9s cubic-bezier(.2,.8,.2,1),transform .9s cubic-bezier(.2,.8,.2,1),filter .9s}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.rv.pre{opacity:1;transform:none;filter:none}}
 </style>
 
-<header class="nav">
-  <div class="wrap">
-    <a class="logo" href="#top" aria-label="ServiceGuru"><i></i>ServiceGuru</a>
-    <nav class="menu" id="menu">
-      <a href="#about">Компания</a><a href="#platform">Функционал</a><a href="#pricing">Тарифы</a><a href="#services">Услуги</a><a href="#events">Мероприятия</a><a href="#blog">Блог</a><a href="#solutions">Решения</a><a href="#cases">Кейсы</a>
-    </nav>
-    <div class="nav-r">
-      <span class="tel">+7 (499) 647-73-64</span>
-      <button class="theme" id="theme" aria-label="Сменить тему"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
-      <a class="btn btn-ghost" href="#login">Войти</a>
-      <a class="btn btn-primary" href="#demo">Записаться на Демо</a>
-      <button class="burger" id="burger" aria-label="Меню" aria-expanded="false">☰</button>
-    </div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#00cfff"/><stop offset="1" stop-color="#b6ff3b"/></linearGradient>
+  <linearGradient id="gg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff5f7e"/><stop offset=".5" stop-color="#00cfff"/><stop offset="1" stop-color="#b6ff3b"/></linearGradient>
+</defs></svg>
+
+<div class="navwrap"><header class="nav">
+  <a class="logo" href="#top" aria-label="ServiceGuru"><i></i>ServiceGuru</a>
+  <nav class="menu" id="menu">
+    <a href="#about">Компания</a><a href="#platform">Функционал</a><a href="#pricing">Тарифы</a><a href="#services">Услуги</a><a href="#events">Мероприятия</a><a href="#blog">Блог</a><a href="#solutions">Решения</a><a href="#cases">Кейсы</a>
+  </nav>
+  <div class="nav-r">
+    <span class="tel">+7 (499) 647-73-64</span>
+    <button class="icon-btn" id="theme" aria-label="Сменить тему"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button>
+    <a class="btn btn-ghost" href="#login">Войти</a>
+    <a class="btn btn-primary" href="#demo">Записаться на Демо</a>
+    <button class="icon-btn burger" id="burger" aria-label="Меню" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
   </div>
-</header>
+</header></div>
 
 <main id="top">
 <section class="hero">
+  <canvas id="aurora" aria-hidden="true"></canvas>
   <div class="wrap">
     <div>
-      <span class="eyebrow reveal">AI-ПЛАТФОРМА ДЛЯ СЕРВИСА И ПРОДАЖ</span>
-      <h1 class="reveal d1">НАЙМ, РАЗВИТИЕ <em>И МОТИВАЦИЯ</em> КОМАНДЫ НА ОДНОЙ ПЛАТФОРМЕ</h1>
-      <p class="lead reveal d2">ServiceGuru - мобильная платформа для найма, обучения, адаптации и мотивации линейного персонала сетевых компаний: ресторанов, розницы, отелей, клиник и логистики.</p>
-      <div class="chips reveal d2"><span class="chip">Обучение</span><span class="chip">Лидерборд</span><span class="chip">Аттестации</span><span class="chip">Баллы и награды</span><span class="chip">AI-инстурменты</span></div>
-      <div class="hero-cta reveal d3"><a class="btn btn-primary" href="#demo">Получить демо-доступ <span class="arrow">→</span></a></div>
+      <span class="pill"><b>AI</b>AI-ПЛАТФОРМА ДЛЯ СЕРВИСА И ПРОДАЖ</span>
+      <h1>НАЙМ, РАЗВИТИЕ <span class="l2">И МОТИВАЦИЯ КОМАНДЫ</span> НА ОДНОЙ ПЛАТФОРМЕ</h1>
+      <p class="lead">ServiceGuru - мобильная платформа для найма, обучения, адаптации и мотивации линейного персонала сетевых компаний: ресторанов, розницы, отелей, клиник и логистики.</p>
+      <div class="chips" id="chips" role="tablist">
+        <button class="chip on" data-s="0" role="tab">Обучение</button><button class="chip" data-s="1" role="tab">Лидерборд</button><button class="chip" data-s="2" role="tab">Аттестации</button><button class="chip" data-s="3" role="tab">Баллы и награды</button><button class="chip" data-s="4" role="tab">AI-инстурменты</button>
+      </div>
+      <div class="cta-row"><a class="btn btn-primary" href="#demo">Получить демо-доступ <span class="arr">→</span></a></div>
+      <div class="scroll"><i></i>scroll</div>
     </div>
-    <div class="stage" aria-hidden="false">
-      <div class="phone"><div class="screen">
-        <span class="scr-t">Рейтинг сотрудников</span>
-        <div class="row"><span class="av"></span>Анна К.<b>1 240</b></div>
-        <div class="row"><span class="av b"></span>Игорь М.<b>1 118</b></div>
-        <div class="row"><span class="av c"></span>Мария С.<b>1 046</b></div>
-        <span class="scr-t" style="margin-top:6px">Выполнение целей</span>
-        <div><div class="small">План / факт</div><div class="bar"><i style="--w:86%"></i></div></div>
-        <div><div class="small">Награды</div><div class="bar"><i style="--w:64%"></i></div></div>
-        <div><div class="small">Аттестации</div><div class="bar"><i style="--w:92%"></i></div></div>
+
+    <div class="stage" id="stage">
+      <div class="device" id="device"><div class="display">
+        <div class="scr on" data-s="0">
+          <div class="sh"><span>ServiceGuru</span><b>● live</b></div>
+          <div class="sg">Обучение</div>
+          <div class="mini-c"><small>Меню / Ассортимент</small><div class="meter"><i style="--w:82%"></i></div></div>
+          <div class="mini-c"><small>Стандарты сервиса</small><div class="meter"><i style="--w:64%"></i></div></div>
+          <div class="mini-c"><small>Пребординг и онбординг</small><div class="meter"><i style="--w:100%"></i></div></div>
+          <div class="mini-c"><small>Видеоуроки и тесты</small><div class="meter"><i style="--w:38%"></i></div></div>
+        </div>
+        <div class="scr" data-s="1">
+          <div class="sh"><span>Рейтинг сотрудников</span><b>● live</b></div>
+          <div class="sg">Лидерборд</div>
+          <div class="lb" id="lb"></div>
+        </div>
+        <div class="scr" data-s="2">
+          <div class="sh"><span>Аттестации</span><b>пройдена</b></div>
+          <div class="sg">Результат</div>
+          <div class="score pos"><svg class="ring" viewBox="0 0 140 140"><circle class="bg" cx="70" cy="70" r="60"/><circle class="fg" cx="70" cy="70" r="60" style="--off:38"/></svg><span class="ringnum">90%</span></div>
+          <div class="mini-c"><small>Тесты с автооценкой</small><div class="meter"><i style="--w:90%"></i></div></div>
+          <div class="mini-c"><small>Практические кейсы</small><div class="meter"><i style="--w:75%"></i></div></div>
+        </div>
+        <div class="scr" data-s="3">
+          <div class="sh"><span>Баллы и награды</span><b>+120</b></div>
+          <div class="sg">Награды</div>
+          <div class="badges"><div class="bdg on">★</div><div class="bdg on">⚡</div><div class="bdg on">♛</div><div class="bdg on">◆</div><div class="bdg">✦</div><div class="bdg">☗</div></div>
+          <div class="mini-c"><small>Выполнение целей</small><div class="meter"><i style="--w:78%"></i></div></div>
+        </div>
+        <div class="scr" data-s="4">
+          <div class="sh"><span>Диалоговые тренажёры</span><b>AI</b></div>
+          <div class="sg">Тренажёр</div>
+          <div class="bub g">Добрый вечер! Что у вас сегодня из рекомендаций?</div>
+          <div class="bub m">Советую попробовать наше фирменное блюдо шефа.</div>
+          <div class="typing"><i></i><i></i><i></i></div>
+        </div>
       </div></div>
-      <div class="float f1"><div class="top">
-        <svg class="ring" viewBox="0 0 100 100" role="img" aria-label="План / факт"><circle cx="50" cy="50" r="40" fill="none" stroke="var(--line-2)" stroke-width="10"/><circle cx="50" cy="50" r="40" fill="none" stroke="var(--accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="251" stroke-dashoffset="50" transform="rotate(-90 50 50)"/></svg>
-        <div><div class="small">План / факт</div><div class="small">Выполнение целей</div></div></div></div>
-      <div class="float f2"><div class="big">+32%</div><div class="small">Контролируйте планы по продажам</div></div>
-      <div class="float f3"><div class="small">Награды</div><div style="font-size:22px;margin-top:4px">★ ★ ★</div></div>
+      <div class="float fl1"><div class="sh" style="margin-bottom:8px"><span>План / факт</span></div><div style="display:flex;gap:14px;align-items:center"><svg width="62" height="62" viewBox="0 0 100 100" style="transform:rotate(-90deg)"><circle cx="50" cy="50" r="40" fill="none" stroke="var(--line-2)" stroke-width="12"/><circle cx="50" cy="50" r="40" fill="none" stroke="url(#rg)" stroke-width="12" stroke-linecap="round" stroke-dasharray="251" stroke-dashoffset="50"/></svg><div class="cap">Выполнение целей</div></div></div>
+      <div class="float fl2"><div class="big">+32%</div><div class="cap" style="margin-top:6px">Контролируйте планы по продажам</div></div>
+      <div class="float fl3"><div class="sh" style="margin-bottom:6px"><span>Награды</span></div><div class="st">★ ★ ★</div></div>
     </div>
   </div>
 </section>
 
-<div class="wrap" style="margin-bottom:24px"><a class="link" href="#leaderboard">Контролируйте планы по продажам и мотивируйте команду на результат — Посмотреть Лидерборд <span class="arrow">→</span></a></div>
-
-<section class="trust"><div class="wrap trust-grid">
-  <div class="card tcard"><span class="k">Безопасно</span><span class="v">Включены в реестр российского ПО</span></div>
-  <div class="card tcard"><span class="k">Надёжно</span><span class="v">Используем российские сервера</span></div>
-  <div class="card tcard"><span class="k">Профессионально</span><span class="v">Выпускник акселераторов</span></div>
+<section class="trust"><div class="wrap">
+  <div class="trust-g">
+    <div class="panel tc rv"><span class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5L15.5 10"/></svg></span><div><div class="k">Безопасно</div><div class="v">Включены в реестр российского ПО</div></div></div>
+    <div class="panel tc rv"><span class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg></span><div><div class="k">Надёжно</div><div class="v">Используем российские сервера</div></div></div>
+    <div class="panel tc rv"><span class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg></span><div><div class="k">Профессионально</div><div class="v">Выпускник акселераторов</div></div></div>
+  </div>
 </div></section>
 
-<section class="tools" id="solutions"><div class="wrap">
-  <div class="head"><span class="eyebrow">Решения</span>
+<div class="marq" aria-label="Награды">
+  <div class="mtrack">
+    <span class="aw">Резидент ФРИИ</span><span class="aw">Топ-100 EdTech компаний России</span><span class="aw">Финалист конкурса «Новаторы Москвы»</span><span class="aw">Номинант премии «Путеводная звезда» (Лучшее решение для отрасли)</span><span class="aw">Резидент Фонда Содействия инновациям</span><span class="aw">Победитель конкурса «Инновации против кризиса»</span>
+    <span class="aw" aria-hidden="true">Резидент ФРИИ</span><span class="aw" aria-hidden="true">Топ-100 EdTech компаний России</span><span class="aw" aria-hidden="true">Финалист конкурса «Новаторы Москвы»</span><span class="aw" aria-hidden="true">Номинант премии «Путеводная звезда» (Лучшее решение для отрасли)</span><span class="aw" aria-hidden="true">Резидент Фонда Содействия инновациям</span><span class="aw" aria-hidden="true">Победитель конкурса «Инновации против кризиса»</span>
+  </div>
+</div>
+
+<section id="solutions"><div class="wrap">
+  <div class="head rv"><span class="tag">Решения</span>
     <h2>Выберите инструмент для найма, мотивации и роста продаж</h2>
     <p class="lead">ServiceGuru помогает управлять продажами команды, мотивировать сотрудников и автоматизировать найм линейного персонала в ресторанах и сетевых компаниях.</p></div>
-  <div class="tool-grid">
-    <a class="tool a" href="#leaderboard"><h3>Начать выполнять план продаж</h3><span class="go">→</span></a>
-    <a class="tool b" href="#hiring"><h3>Собрать воронку найма в ресторане</h3><span class="go">→</span></a>
+  <div class="tools-g">
+    <a class="panel tool rv" href="#leaderboard">
+      <div class="vis" aria-hidden="true"><i class="col" style="--h:38%"></i><i class="col" style="--h:52%"></i><i class="col" style="--h:46%"></i><i class="col" style="--h:70%"></i><i class="col l" style="--h:84%"></i><i class="col l" style="--h:100%"></i></div>
+      <div class="row"><h3>Начать выполнять план продаж</h3><span class="go">→</span></div></a>
+    <a class="panel tool rv" href="#hiring">
+      <div class="vis funnel" aria-hidden="true"><i style="--w:100%"></i><i style="--w:78%"></i><i style="--w:54%"></i><i style="--w:30%"></i></div>
+      <div class="row"><h3>Собрать воронку найма в ресторане</h3><span class="go">→</span></div></a>
   </div>
-  <div class="awards">
-    <span class="award">Резидент ФРИИ</span><span class="award">Топ-100 EdTech компаний России</span><span class="award">Финалист конкурса «Новаторы Москвы»</span><span class="award">Номинант премии «Путеводная звезда» (Лучшее решение для отрасли)</span><span class="award">Резидент Фонда Содействия инновациям</span><span class="award">Победитель конкурса «Инновации против кризиса»</span>
+  <div class="panel lbline rv" id="leaderboard">
+    <p>Контролируйте планы по продажам и мотивируйте команду на результат</p>
+    <div class="st"><div class="big" data-count="32" data-pre="+" data-suf="%">+32%</div><a class="btn btn-primary" href="#demo">Посмотреть Лидерборд <span class="arr">→</span></a></div>
   </div>
 </div></section>
 
-<section class="lead-strip" id="questions"><div class="wrap"><div class="box">
+<section class="lead-strip" id="questions" style="padding-top:0"><div class="wrap"><div class="panel box rv">
   <div class="head" style="margin:0"><h2>Есть вопросы?</h2><p class="lead">Оставьте заявку, мы перезвоним вам и ответим на все вопросы</p></div>
   <form class="js-form">
-    <div class="field"><input type="text" id="q-name" placeholder="Ваше имя" autocomplete="name" required></div>
-    <div class="field"><input type="email" id="q-mail" placeholder="Ваш email" autocomplete="email" required></div>
+    <input type="text" id="q-name" placeholder="Ваше имя" autocomplete="name" required>
+    <input type="email" id="q-mail" placeholder="Ваш email" autocomplete="email" required>
     <label class="chk"><input type="checkbox" required><span>Я даю согласие ООО «СЕРВИС ГУРУ» на обработку моих персональных данных для связи и обработки заявки. <a href="#">Политика конфиденциальности.</a></span></label>
     <label class="chk"><input type="checkbox"><span>Я согласен получать рекламные материалы по email/телефону от ООО «СЕРВИС ГУРУ».</span></label>
-    <button class="btn btn-primary" type="submit">Оставить заявку</button>
+    <button class="btn btn-primary" type="submit">Оставить заявку <span class="arr">→</span></button>
   </form>
 </div></div></section>
 
-<section id="platform"><div class="wrap">
-  <div class="head"><span class="eyebrow">Функционал</span><h2>Посмотрите, как это работает</h2></div>
-  <div class="video">
-    <button class="play" aria-label="Смотреть видео-обзор">▶</button>
-    <div class="cap"><b>Демо на нашем бизнесе</b><span>Видео-обзор приложения на примере ресторанов.</span></div>
+<section id="platform" style="padding-top:clamp(40px,6vw,80px)"><div class="wrap">
+  <div class="head rv"><span class="tag">Функционал</span><h2>Посмотрите, как это работает</h2></div>
+  <div class="video rv">
+    <canvas id="vcanvas" aria-hidden="true"></canvas>
+    <span class="vbadge">DEMO</span>
+    <button class="play" aria-label="Смотреть видео-обзор"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+    <div class="vcap"><b>Демо на нашем бизнесе</b><span>Видео-обзор приложения на примере ресторанов.</span></div>
+    <div class="scrub"><i></i></div>
   </div>
   <div class="bento">
-    <div class="card c1"><span class="ico">▣</span><h3>Система дистанционного обучения</h3><p>Ваши сотрудники обучаются в любое время и в удобном месте. Загружайте материал любого формата в конструктор курсов за несколько минут или используйте готовые курсы от экспертов.</p><div class="mini"><i>Курсы</i><i>Тесты</i><i>Аттестации</i></div></div>
-    <div class="card c2"><span class="ico">✦</span><h3>Мотивация и геймификация</h3><p>Прозрачная система начисления очков превращает обучение в игру. Внутренняя система рейтингов и виртуальные награды-бейджи.</p></div>
-    <div class="card c3"><span class="ico">☰</span><h3>Корпоративная социальная сеть</h3><p>Актуальное инфо-пространство для всей команды. Чаты и лента новостей в возможностью поставить лайк и добавить в "Избранное".</p></div>
-    <div class="card c4"><span class="ico">♥</span><h3>Управление лояльностью и опросы</h3><p>Собирайте обратную связь от персонала и отслеживайте атмосферу в коллективе, чтобы управлять текучкой.</p></div>
+    <div class="panel bx b1 rv"><h3>Система дистанционного обучения</h3><p>Ваши сотрудники обучаются в любое время и в удобном месте. Загружайте материал любого формата в конструктор курсов за несколько минут или используйте готовые курсы от экспертов.</p>
+      <div class="ui" aria-hidden="true"><div class="cour"><i></i>Курсы<span class="pr">100%</span></div><div class="cour drag"><i></i>Тесты<span class="pr">76%</span></div><div class="cour"><i></i>Аттестации<span class="pr">42%</span></div></div></div>
+    <div class="panel bx b2 rv"><h3>Мотивация и геймификация</h3><p>Прозрачная система начисления очков превращает обучение в игру. Внутренняя система рейтингов и виртуальные награды-бейджи.</p>
+      <div class="ui" aria-hidden="true"><div class="rwd"><i>★</i><i>⚡</i><i>♛</i><i>✦</i></div></div></div>
+    <div class="panel bx b3 rv"><h3>Корпоративная социальная сеть</h3><p>Актуальное инфо-пространство для всей команды. Чаты и лента новостей в возможностью поставить лайк и добавить в "Избранное".</p>
+      <div class="ui"><div class="post"><div class="ln" style="width:70%"></div><div class="ln" style="width:92%"></div><button class="like" id="like" aria-pressed="false" aria-label="Поставить лайк"><span>♥</span><b id="likes" style="font-weight:500">24</b></button></div></div></div>
+    <div class="panel bx b4 rv" id="gaugebox"><h3>Управление лояльностью и опросы</h3><p>Собирайте обратную связь от персонала и отслеживайте атмосферу в коллективе, чтобы управлять текучкой.</p>
+      <div class="ui" aria-hidden="true"><div class="gauge"><svg viewBox="0 0 180 100"><path class="t" d="M16 92A74 74 0 0 1 164 92"/><path class="v" d="M16 92A74 74 0 0 1 164 92"/></svg><b>eNPS</b></div></div></div>
   </div>
 </div></section>
 
-<section class="proof" id="cases-short"><div class="wrap proof-grid">
-  <div>
-    <div class="stat">400+</div>
-    <h2 style="margin-top:12px;font-size:clamp(22px,2.6vw,32px)">Более 400 компаний доверили обучение персонала ServiceGuru</h2>
-    <div class="actions"><a class="btn btn-primary" href="#cases">Посмотреть кейсы компаний <span class="arrow">→</span></a><a class="btn btn-ghost" href="#demo">Показать, как это будет работать у нас <span class="arrow">→</span></a></div>
-  </div>
-  <div class="community"><h3>Присоединяйтесь к сообществу адептов сервиса</h3><p class="lead">Знаем всё о сервисе. Рассказываем, как обучать и мотивировать команду в сфере услуг и увеличивать выручку за счёт клиентоориентированного персонала.</p><a class="btn btn-primary" style="justify-self:start" href="https://t.me/adepty_servisa">Присоединиться</a></div>
+<section class="proof-s" style="padding-top:0"><div class="wrap proof-g">
+  <div class="panel numcard rv"><div class="num" data-count="400" data-suf="+">400+</div><h3>Более 400 компаний доверили обучение персонала ServiceGuru</h3>
+    <div class="acts"><a class="btn btn-primary" href="#cases">Посмотреть кейсы компаний <span class="arr">→</span></a><a class="btn btn-ghost" href="#demo">Показать, как это будет работать у нас <span class="arr">→</span></a></div></div>
+  <div class="panel comm rv"><div><span class="tag" style="margin-bottom:18px">Telegram</span><h3>Присоединяйтесь к сообществу адептов сервиса</h3></div><p class="lead">Знаем всё о сервисе. Рассказываем, как обучать и мотивировать команду в сфере услуг и увеличивать выручку за счёт клиентоориентированного персонала.</p><a class="btn btn-primary" style="justify-self:start" href="https://t.me/adepty_servisa">Присоединиться <span class="arr">→</span></a></div>
 </div></section>
 
 <section id="hiring"><div class="wrap days">
-  <div class="sticky"><span class="eyebrow">О платформе</span>
-    <h2 style="margin:16px 0 20px">Внедрите систему найма, обучения и мотивации за 3 дня</h2>
+  <div class="sticky rv"><span class="tag">О платформе</span>
+    <h2 style="margin:18px 0 22px">Внедрите систему найма, обучения и мотивации <span class="grad">за 3 дня</span></h2>
     <p class="lead">Выбирайте готовые курсы или создайте своё обучение в удобном конструкторе.</p>
-    <div class="steps">
-      <div class="card"><h3>Запустить обучение команды за 3 дня</h3></div>
-      <div class="card"><h3>Настроим платформу под ваши процессы</h3><a class="link" href="#demo">→</a></div>
-    </div></div>
+    <div class="sbox"><div class="panel"><h3>Запустить обучение команды за 3 дня</h3><span class="go" style="width:44px;height:44px;font-size:18px">✓</span></div><a class="panel" href="#demo"><h3>Настроим платформу под ваши процессы</h3><span class="go" style="width:44px;height:44px;font-size:18px">→</span></a></div></div>
   <div class="feat">
-    <div class="card"><h3>Обучающие материалы любых форматов</h3></div>
-    <div class="card"><h3>Быстрая оценка результатов обучения</h3><p>Проверяйте знания сотрудников при помощи тестов, создавайте аттестации по должностям и отслеживайте результаты в подробной аналитике.</p></div>
-    <div class="card"><h3>Создание базы знаний и учебных материалов компании</h3><p>Настраивайте единую библиотеку для обучения всех ваших сотрудников.</p></div>
-    <div class="card"><h3>Геймификация и рейтинги</h3><p>Мотивируйте персонал развиваться в профессии при помощи бонусов и системы рейтингов.</p></div>
-    <div class="card"><h3>Постоянная связь с сотрудниками</h3><p>Пользуйтесь новостями и чатами, сообщениями с уведомлениями о прочтении.</p></div>
+    <div class="panel fc rv"><span class="dot"></span><h3>Обучающие материалы любых форматов</h3></div>
+    <div class="panel fc rv"><span class="dot"></span><h3>Быстрая оценка результатов обучения</h3><p>Проверяйте знания сотрудников при помощи тестов, создавайте аттестации по должностям и отслеживайте результаты в подробной аналитике.</p></div>
+    <div class="panel fc rv"><span class="dot"></span><h3>Создание базы знаний и учебных материалов компании</h3><p>Настраивайте единую библиотеку для обучения всех ваших сотрудников.</p></div>
+    <div class="panel fc rv"><span class="dot"></span><h3>Геймификация и рейтинги</h3><p>Мотивируйте персонал развиваться в профессии при помощи бонусов и системы рейтингов.</p></div>
+    <div class="panel fc rv"><span class="dot"></span><h3>Постоянная связь с сотрудниками</h3><p>Пользуйтесь новостями и чатами, сообщениями с уведомлениями о прочтении.</p></div>
   </div>
 </div></section>
 
-<section id="courses" class="about"><div class="wrap">
-  <div class="head"><span class="eyebrow">Готовые курсы</span><h2>Нет своих обучающих материалов? Предоставим готовые или разработаем специально для вас!</h2></div>
-  <div class="courses">
-    <a class="course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#0b6cff,#00bdff)"></div><h3>Сервис-менеджер: мастерство эффективного обучения персонала ресторана</h3><p>Научим эффективно обучать персонал своими силами!</p><span class="link">Подробнее о курсе <span class="arrow">→</span></span></a>
-    <a class="course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#6a9a00,#c4f236)"></div><h3>Рекрутинг 2.0: эффективные стратегии найма для ресторанов</h3><p>Методы и стратегии эффективного найма в условиях кадрового голода.</p><span class="link">Подробнее о курсе <span class="arrow">→</span></span></a>
-    <a class="course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#7a4bff,#00bdff)"></div><h3>Вдохновляющий менеджмент: эффективные стратегии мотивации сотрудников в рестoране</h3><p>Мотивация - лучший инструмент для достижения высоких стандартов обслуживания.</p><span class="link">Подробнее о курсе <span class="arrow">→</span></span></a>
-    <a class="course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#a3123a,#ff6b8a)"></div><h3>Сомелье для начинающих: быстрое погружение в мир вин Италии, Франции и России</h3><p>Краткий курс о винах разных стран содержит базовые знания для работы начинающего сомелье.</p><span class="link">Подробнее о курсе <span class="arrow">→</span></span></a>
-    <a class="course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#0a8f7a,#5be1ff)"></div><h3>Мастерство официанта: полный гид по стандартам работы</h3><p>Освойте стандарты работы официанта: все необходимые навыки и знания для успешной работы в рeсторане.</p><span class="link">Подробнее о курсе <span class="arrow">→</span></span></a>
+<section id="courses" style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Готовые курсы</span><h2>Нет своих обучающих материалов? Предоставим готовые или разработаем специально для вас!</h2></div>
+  <div class="rail rv">
+  <a class="panel course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#0a4bff,#00cfff)"></div><h3>Сервис-менеджер: мастерство эффективного обучения персонала ресторана</h3><p>Научим эффективно обучать персонал своими силами!</p><span class="more">Подробнее о курсе <span class="arr">→</span></span></a>
+  <a class="panel course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#3f8f00,#b6ff3b)"></div><h3>Рекрутинг 2.0: эффективные стратегии найма для ресторанов</h3><p>Методы и стратегии эффективного найма в условиях кадрового голода.</p><span class="more">Подробнее о курсе <span class="arr">→</span></span></a>
+  <a class="panel course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#5b2bff,#ff5fd0)"></div><h3>Вдохновляющий менеджмент: эффективные стратегии мотивации сотрудников в ресторане</h3><p>Мотивация - лучший инструмент для достижения высоких стандартов обслуживания.</p><span class="more">Подробнее о курсе <span class="arr">→</span></span></a>
+  <a class="panel course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#9d0b3a,#ff7a59)"></div><h3>Сомелье для начинающих: быстрое погружение в мир вин Италии, Франции и России</h3><p>Краткий курс о винах разных стран содержит базовые знания для работы начинающего сомелье.</p><span class="more">Подробнее о курсе <span class="arr">→</span></span></a>
+  <a class="panel course" href="#"><div class="cover" style="--g:linear-gradient(135deg,#008f7a,#5be1ff)"></div><h3>Мастерство официанта: полный гид по стандартам работы</h3><p>Освойте стандарты работы официанта: все необходимые навыки и знания для успешной работы в ресторане.</p><span class="more">Подробнее о курсе <span class="arr">→</span></span></a>
   </div>
-  <div style="margin-top:36px"><a class="link" href="#">Смотреть все программы в каталоге Готовых курсов ServiceGuru <span class="arrow">→</span></a></div>
+  <div style="margin-top:28px"><a class="more" href="#">Смотреть все программы в каталоге Готовых курсов ServiceGuru <span class="arr">→</span></a></div>
 </div></section>
 
-<section id="services"><div class="wrap out">
-  <div>
-    <span class="eyebrow">Услуги</span>
-    <h2 style="margin:16px 0 8px">Некому заниматься обучением?</h2>
-    <p class="lead" style="margin-bottom:24px">Предоставим сервис-менеджера на аутсорcе! Сервис-менеджер на аутcорсе — это специалист из команды ServiceGuru.</p>
-    <div class="save"><b>70%</b><span>дешевле штатного специалиста</span></div>
-    <div style="margin-top:28px;display:flex;gap:14px;flex-wrap:wrap"><a class="btn btn-primary" href="#demo">Узнайте стоимость сервис-менеджера на аутсорсе</a></div>
+<section id="services" style="padding-top:0"><div class="wrap out">
+  <div class="rv">
+    <span class="tag">Услуги</span>
+    <h2 style="margin:18px 0 18px">Некому заниматься обучением?</h2>
+    <p class="lead">Предоставим сервис-менеджера на аутсорсе! Сервис-менеджер на аутсорсе — это специалист из команды ServiceGuru.</p>
+    <div class="pct" data-count="70" data-suf="%">70%</div><p class="pctl">дешевле штатного специалиста</p>
+    <div style="margin-top:32px"><a class="btn btn-primary" href="#demo">Узнайте стоимость сервис-менеджера на аутсорсе <span class="arr">→</span></a></div>
   </div>
-  <div>
-    <p style="margin-bottom:16px">Вы получите полноценного менеджера по обучению, который возьмет на себя:</p>
+  <div class="rv">
+    <p style="margin-bottom:18px;font-size:18px">Вы получите полноценного менеджера по обучению, который возьмет на себя:</p>
     <ul class="tick">
-      <li>Формирование и обновление учебных материалов, а также их размещение на платформе.</li>
-      <li>Добавление на платформу новых и удаление уволенных сотрудников.</li>
-      <li>Проведение опросов и подготовку ежемесячных отчетов.</li>
-      <li>Подготовку рекомендаций по улучшению системы обучения и развитию персонала.</li>
-      <li>Разработку аттестации сотрудников и мониторинг их успеваемости.</li>
-      <li>Сопровождение новых сотрудников на этапе адаптации.</li>
+      <li class="panel">Формирование и обновление учебных материалов, а также их размещение на платформе.</li>
+      <li class="panel">Добавление на платформу новых и удаление уволенных сотрудников.</li>
+      <li class="panel">Проведение опросов и подготовку ежемесячных отчетов.</li>
+      <li class="panel">Подготовку рекомендаций по улучшению системы обучения и развитию персонала.</li>
+      <li class="panel">Разработку аттестации сотрудников и мониторинг их успеваемости.</li>
+      <li class="panel">Сопровождение новых сотрудников на этапе адаптации.</li>
     </ul>
   </div>
 </div></section>
 
-<section class="proof"><div class="wrap">
-  <div class="head"><span class="eyebrow">Надёжно</span><h2>ServiceGuru — надёжная платформа, работающая с 2015 года</h2><p class="lead">Отвечаем на все возникшие вопросы любым удобным для вас способом: по телефону, электронной почте, в приложении и мессенджере.</p></div>
+<section style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Надёжно</span><h2>ServiceGuru — надёжная платформа, работающая с 2015 года</h2><p class="lead">Отвечаем на все возникшие вопросы любым удобным для вас способом: по телефону, электронной почте, в приложении и мессенджере.</p></div>
   <div class="rel">
-    <div class="card"><span class="k">Техподдержка</span><h3>быстро и оперативно</h3><p>Большинство вопросов решаем в течение 3 часов</p></div>
-    <div class="card"><span class="k">Ваши данные в безопасности</span><p>Хранение данных для компаний разграничено и гарантирует полную безопасность</p></div>
-    <div class="card"><span class="k">Безопасно</span><p>ServiceGuru входит в Реестр аккредитованных организаций Министерства цифрового развития РФ разработчиков российского программного обеспечения</p></div>
-    <div class="card"><span class="k">Надёжно</span><p>Применяемая на платформе облачная инфраструктура хранится на российских серверах и соответствует №152 ФЗ «О защите персональных данных»</p></div>
+    <div class="panel rv"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="13" width="4" height="6" rx="1.5"/><rect x="17" y="13" width="4" height="6" rx="1.5"/></svg></span><span class="tag">Техподдержка</span><h3>быстро и оперативно</h3><p>Большинство вопросов решаем в течение 3 часов</p></div>
+    <div class="panel rv"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span><span class="tag">Ваши данные в безопасности</span><p>Хранение данных для компаний разграничено и гарантирует полную безопасность</p></div>
+    <div class="panel rv"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5L15.5 10"/></svg></span><span class="tag">Безопасно</span><p>ServiceGuru входит в Реестр аккредитованных организаций Министерства цифрового развития РФ разработчиков российского программного обеспечения</p></div>
+    <div class="panel rv"><span class="ic"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg></span><span class="tag">Надёжно</span><p>Применяемая на платформе облачная инфраструктура хранится на российских серверах и соответствует №152 ФЗ «О защите персональных данных»</p></div>
   </div>
 </div></section>
 
-<section class="about" id="about"><div class="wrap">
-  <div class="about-grid">
-    <div>
-      <span class="eyebrow">О ServiceGuru</span>
-      <h2 style="margin:16px 0 20px">ServiceGuru — российская IT-платформа, работающая с 2015 года</h2>
+<section id="about" style="padding-top:0"><div class="wrap">
+  <div class="about-g">
+    <div class="rv">
+      <span class="tag">О ServiceGuru</span>
+      <h2 style="margin:18px 0 22px">ServiceGuru — российская IT-платформа, работающая с 2015 года</h2>
       <p class="lead">Разрабатываем технологии для найма, развития и управления результатами линейного персонала сетевых компаний.</p>
-      <h3 style="margin:36px 0 12px">Технологии для команды — от кандидата до результата</h3>
+      <h3 style="margin:38px 0 14px;font-size:clamp(20px,2vw,26px)">Технологии для команды — от кандидата до результата</h3>
       <p class="lead">Общество с ограниченной ответственностью «СЕРВИС ГУРУ» разрабатывает программную платформу ServiceGuru для автоматизации найма, адаптации, обучения, аттестации, коммуникации, мотивации и управления результатами сотрудников. Платформа предназначена для ресторанных сетей, ритейла, гостиниц, клиник, логистических компаний и других организаций с распределёнными командами.</p>
       <ul class="checks"><li>ServiceGuru развивается собственной IT-командой</li><li>Программный продукт имеет государственную регистрацию</li><li>ServiceGuru включён в Единый реестр российского ПО</li></ul>
     </div>
-    <div class="cert">
+    <div class="panel cert rv">
       <span class="no">Государственная регистрация</span>
-      <h3>Зарегистрированная программа для ЭВМ</h3>
+      <h3 style="font-size:clamp(20px,2vw,26px)">Зарегистрированная программа для ЭВМ</h3>
       <dl>
         <div><dt>Свидетельство</dt><dd>№ 2021619567</dd></div>
         <div><dt>Программа</dt><dd>«Платформа мобильного обучения и бизнес-коммуникации ServiceGuru»</dd></div>
@@ -494,23 +664,34 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
         <div><dt>Регистрация</dt><dd>15 июня 2021 года</dd></div>
         <div><dt>Реестр</dt><dd>реестровая запись № 13970 от 14.06.2022</dd></div>
       </dl>
-      <a class="link" href="#">Открыть свидетельство <span class="arrow">→</span></a>
+      <a class="more" href="#">Открыть свидетельство <span class="arr">→</span></a>
+    </div>
+  </div>
+  <div class="term rv">
+    <div class="bar"><i></i><i></i><i></i><span>Технологическая основа ServiceGuru</span></div>
+    <div class="tgrid">
+      <div class="tcell"><b>Backend</b><span>Ruby 3.3, Ruby on Rails 7.1, Grape API, Sidekiq</span></div>
+      <div class="tcell"><b>Frontend</b><span>React 19, TypeScript, Material UI, Vue.js 2.7</span></div>
+      <div class="tcell"><b>Mobile</b><span>React Native для iOS и Android, NativeBase</span></div>
+      <div class="tcell"><b>Базы данных</b><span>PostgreSQL 15, TimescaleDB, Redis, Elasticsearch, Cube.js</span></div>
+      <div class="tcell"><b>Инфраструктура</b><span>Docker, AWS S3 / Selectel, MinIO, Firebase</span></div>
+      <div class="tcell"><b>DevOps и мониторинг</b><span>GitLab CI/CD, Ansible, HashiCorp Vault, Zabbix, Sentry<i class="cur"></i></span></div>
     </div>
   </div>
 </div></section>
 
-<section id="pricing"><div class="wrap">
-  <div class="head"><span class="eyebrow">Цены и тарифы</span><h2>Один продукт. Три уровня результата</h2>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px"><a class="btn btn-ghost" href="#demo">Обсудить с экспертом на встрече</a><a class="btn btn-ghost" href="#demo">Записаться на экскурсию</a></div></div>
-  <div class="price-grid">
-    <div class="plan"><div class="nm">Обучение</div><p class="desc">Для системного обучения, адаптации и коммуникации с командой</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 59 990 ₽</div><a class="btn btn-ghost" href="#demo">Оставить заявку</a></div>
-    <div class="plan"><div class="nm">Мотивация</div><p class="desc">Для компаний, которые хотят не только обучать, но и повышать вовлеченность команды</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 69 990 ₽</div><a class="btn btn-ghost" href="#demo">Оставить заявку</a></div>
-    <div class="plan hot"><span class="tag">Самый популярный</span><div class="nm">Продажи</div><p class="desc">Для компаний, которые хотят связать работу команды с коммерческими результатами</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 89 990 ₽</div><a class="btn btn-primary" href="#demo">Оставить заявку</a></div>
+<section id="pricing" style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Цены и тарифы</span><h2>Один продукт. <span class="grad">Три уровня результата</span></h2>
+    <div class="btns"><a class="btn btn-ghost" href="#demo">Обсудить с экспертом на встрече</a><a class="btn btn-ghost" href="#demo">Записаться на экскурсию</a></div></div>
+  <div class="price-g">
+    <div class="panel plan rv"><div class="nm">Обучение</div><p class="desc">Для системного обучения, адаптации и коммуникации с командой</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 59 990 ₽</div><a class="btn btn-ghost" href="#demo">Оставить заявку</a></div>
+    <div class="panel plan rv"><div class="nm">Мотивация</div><p class="desc">Для компаний, которые хотят не только обучать, но и повышать вовлеченность команды</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 69 990 ₽</div><a class="btn btn-ghost" href="#demo">Оставить заявку</a></div>
+    <div class="panel plan hot rv"><span class="badge">Самый популярный</span><div class="nm">Продажи</div><p class="desc">Для компаний, которые хотят связать работу команды с коммерческими результатами</p><div class="pr"><small>Стартовые цены для команд от 30 сотрудников</small>от 89 990 ₽</div><a class="btn btn-primary" href="#demo">Оставить заявку <span class="arr">→</span></a></div>
   </div>
-  <div class="pnote"><span>Итоговая стоимость зависит от количества сотрудников и выбранного набора функций. Полная тарифная сетка опубликована в прайс-листе.</span><a class="link" href="#">Смотреть полный прайс PDF <span class="arrow">→</span></a></div>
+  <div class="pnote rv"><span style="max-width:62ch">Итоговая стоимость зависит от количества сотрудников и выбранного набора функций. Полная тарифная сетка опубликована в прайс-листе.</span><a class="more" href="#">Смотреть полный прайс PDF <span class="arr">→</span></a></div>
 </div></section>
 
-<section class="about" id="calc"><div class="wrap"><div class="lead-strip"><div class="box">
+<section class="lead-strip" id="calc" style="padding-top:0"><div class="wrap"><div class="panel box rv">
   <div class="head" style="margin:0"><h2>Узнайте точную стоимость ServiceGuru для вашей компании</h2><p class="lead">Ответьте на несколько вопросов, и наши менеджеры рассчитают стоимость платформы с индивидуальной скидкой.</p></div>
   <form class="js-form">
     <p style="font-size:14px;color:var(--muted)">Количество сотрудников в компании, которые будут использовать платформу</p>
@@ -518,54 +699,57 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
     <input type="text" id="c-name" placeholder="Ваше имя" required>
     <input type="tel" id="c-tel" placeholder="Телефон" required>
     <label class="chk"><input type="checkbox" required><span>Я даю согласие ООО «СЕРВИС ГУРУ» на обработку моих персональных данных для связи и обработки заявки. <a href="#">Политика конфиденциальности.</a></span></label>
-    <button class="btn btn-primary" type="submit">Оставить заявку</button>
+    <button class="btn btn-primary" type="submit">Оставить заявку <span class="arr">→</span></button>
   </form>
-</div></div></div></section>
+</div></div></section>
 
-<section id="reviews"><div class="wrap">
-  <div class="head"><span class="eyebrow">Отзывы</span><h2>Клиенты любят ServiceGuru</h2></div>
-  <div class="reviews">
-    <div class="card rev"><q>Это просто <em>очень классный продукт</em>, который очень сильно помогает особенно в рамках больших масштабных проектов! Я не очень понимаю, как без ServiceGuru, без диджитализации процессов, выстраивать систему обучения, чтобы она была эффективной.</q><div class="who"><span class="av"></span><div><b>Глеб Марач</b><span>Управляющий партнер ресторана Nome, сеть True Cost</span></div></div></div>
-    <div class="card rev"><q>ServiceGuru помог нам сделать обучение персонала <em>удобным и эффективным</em>. Теперь сотрудники всегда могут быстро найти нужную информацию и уверенно работать с пациентами, что положительно сказывается на <em>имидже клиники и лояльности</em> пациентов.</q><div class="who"><span class="av b"></span><div><b>Агунда Абисалова</b><span>Менеджер спец. проектов Группы компаний МЕГА</span></div></div></div>
-    <div class="card rev"><q>Это совсем другое поколение – поколение цифровых технологии. Молодежь предпочитает обучение онлайн, поэтому переход стал для нас очевидным решением. <em>Это мобильно и легко</em>, нет необходимости распечатывать кучу листов, всегда можно подгрузить файлы, фотографии блюд. Очень удобно.</q><div class="who"><span class="av c"></span><div><b>Наталья Татарникова</b><span>HR-директор бренда FARШ</span></div></div></div>
-    <div class="card rev"><q>Сервис значительно упрощает работу с новыми сотрудниками. Онбординг и все необходимые инструкции находятся в приложении, здесь же он проходит тестирование, которое является допуском к работе. Так экономится время как нового сотрудника, так и его руководителя.</q><div class="who"><span class="av"></span><div><b>Дарина Мажуренко</b><span>HR-директора сети баров Respublica</span></div></div></div>
-    <div class="card rev"><q>В основном мы <em>используем сервис как электронное меню</em>, по которому учатся официанты. И мы бы без него совершенно точно не обошлись, потому что у нас очень сложное меню. Вплоть до того, что в некоторых блюдах только в одном соусе-заправке может быть 27 ингредиентов - и их нельзя не знать, потому что, например, некоторые из них аллергены.</q><div class="who"><span class="av b"></span><div><b>Алеся Щичко</b><span>Тренер по продуктовому обучению Кофемании</span></div></div></div>
+<section id="reviews" style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Отзывы</span><h2>Клиенты любят ServiceGuru</h2></div>
+  <div class="rv-rail rv">
+  <div class="panel rev"><q>Это просто <em>очень классный продукт</em>, который очень сильно помогает особенно в рамках больших масштабных проектов! Я не очень понимаю, как без ServiceGuru, без диджитализации процессов, выстраивать систему обучения, чтобы она была эффективной.</q><div class="who"><span class="av"></span><div><b>Глеб Марач</b><span>Управляющий партнер ресторана Nome, сеть True Cost</span></div></div></div>
+  <div class="panel rev"><q>ServiceGuru помог нам сделать обучение персонала <em>удобным и эффективным</em>. Теперь сотрудники всегда могут быстро найти нужную информацию и уверенно работать с пациентами, что положительно сказывается на <em>имидже клиники и лояльности</em> пациентов.</q><div class="who"><span class="av b"></span><div><b>Агунда Абисалова</b><span>Менеджер спец. проектов Группы компаний МЕГА</span></div></div></div>
+  <div class="panel rev"><q>Это совсем другое поколение – поколение цифровых технологии. Молодежь предпочитает обучение онлайн, поэтому переход стал для нас очевидным решением. <em>Это мобильно и легко</em>, нет необходимости распечатывать кучу листов, всегда можно подгрузить файлы, фотографии блюд. Очень удобно.</q><div class="who"><span class="av c"></span><div><b>Наталья Татарникова</b><span>HR-директор бренда FARШ</span></div></div></div>
+  <div class="panel rev"><q>Сервис значительно упрощает работу с новыми сотрудниками. Онбординг и все необходимые инструкции находятся в приложении, здесь же он проходит тестирование, которое является допуском к работе. Так экономится время как нового сотрудника, так и его руководителя.</q><div class="who"><span class="av d"></span><div><b>Дарина Мажуренко</b><span>HR-директора сети баров Respublica</span></div></div></div>
+  <div class="panel rev"><q>В основном мы <em>используем сервис как электронное меню</em>, по которому учатся официанты. И мы бы без него совершенно точно не обошлись, потому что у нас очень сложное меню. Вплоть до того, что в некоторых блюдах только в одном соусе-заправке может быть 27 ингредиентов - и их нельзя не знать, потому что, например, некоторые из них аллергены.</q><div class="who"><span class="av e"></span><div><b>Алеся Щичко</b><span>Тренер по продуктовому обучению Кофемании</span></div></div></div>
+  <div class="panel rev"><q>Это действительно что-то из будущего – все устали от бумажек, устали повторять одно и то же. На своём опыте знаю, что такая платформа просто необходима в любой медицинской или beauty-компании.</q><div class="who"><span class="av b"></span><div><b>Татьяна Афремова</b><span>Директор по клиентскому сервису сети косметологических клиник «Save the beauty»</span></div></div></div>
   </div>
 </div></section>
 
-<section class="about" id="cases"><div class="wrap">
-  <div class="head"><span class="eyebrow">Кейсы</span><h2>Кейсы</h2></div>
+<section id="cases" style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Кейсы</span><h2>Кейсы</h2></div>
   <div class="cases">
-    <a class="case" href="#"><h3>Отель Вега Измайлово</h3><p>«В ServiceGuru есть возможность посмотреть, кто что изучил. Можно в любой момент подойти и спросить этот материал. Это точно помогает оценить, владеет ли сотрудник знаниями, и если да, то почему не применяет их.»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Сеть ресторанов Арама Мнацаканова</h3><p>«На текущий момент ServiceGuru закрывает 70% наших потребностей в адаптации и обучении сотрудников»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Tegen — сеть магазинов в Узбекистане</h3><p>«Возможность всё оцифровать, контролировать, отслеживать — это то, что нам было нужно. Мы смотрели другие платформы, но остановились на вашей: оптимальное сочетание цены и функционала.»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Рестораны Супра</h3><p>«Сотрудники сами делают материалы так, как им удобно, т.к. только они знают, как им будет наиболее эффективно обучаться»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Ресторанный комплекс Рататуй (Ульяновск)</h3><p>«Сервис-менеджер точно знает, как донести всю информацию до сотрудников. Особенно для поколения Z — получается ярко и красочно, как они любят.»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Клиника Мега</h3><p>«Мы хотели сделать обучение для персонала максимально простым, эффективным и удобным»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Сеть ресторанов “Аджикинежаль”</h3><p>«Благодаря планированию мы заранее готовим обучение на месяц вперед. Команды к запуску обучены»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Компания "Винегрет"</h3><p>«Нашей целью было избавиться от устаревшего бумажного формата и полностью перевести обучение в онлайн. И, благодаря ServiceGuru, нам это удалось!»</p><span class="link">Читать <span class="arrow">→</span></span></a>
-    <a class="case" href="#"><h3>Холдинг Welcome Group</h3><p>«Постоянный доступ к образовательным материалам и регулярная аттестация улучшили результаты сотрудников на 70%»</p><span class="link">Читать <span class="arrow">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Отель Вега Измайлово</h3><p>«В ServiceGuru есть возможность посмотреть, кто что изучил. Можно в любой момент подойти и спросить этот материал. Это точно помогает оценить, владеет ли сотрудник знаниями, и если да, то почему не применяет их.»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Сеть ресторанов Арама Мнацаканова</h3><p>«На текущий момент ServiceGuru закрывает 70% наших потребностей в адаптации и обучении сотрудников»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Tegen — сеть магазинов в Узбекистане</h3><p>«Возможность всё оцифровать, контролировать, отслеживать — это то, что нам было нужно. Мы смотрели другие платформы, но остановились на вашей: оптимальное сочетание цены и функционала.»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Рестораны Супра</h3><p>«Сотрудники сами делают материалы так, как им удобно, т.к. только они знают, как им будет наиболее эффективно обучаться»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Ресторанный комплекс Рататуй (Ульяновск)</h3><p>«Сервис-менеджер точно знает, как донести всю информацию до сотрудников. Особенно для поколения Z — получается ярко и красочно, как они любят.»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Клиника Мега</h3><p>«Мы хотели сделать обучение для персонала максимально простым, эффективным и удобным»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Сеть ресторанов “Аджикинежаль”</h3><p>«Благодаря планированию мы заранее готовим обучение на месяц вперед. Команды к запуску обучены»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Компания "Винегрет"</h3><p>«Нашей целью было избавиться от устаревшего бумажного формата и полностью перевести обучение в онлайн. И, благодаря ServiceGuru, нам это удалось!»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>Холдинг Welcome Group</h3><p>«Постоянный доступ к образовательным материалам и регулярная аттестация улучшили результаты сотрудников на 70%»</p><span class="more">Читать <span class="arr">→</span></span></a>
+    <a class="panel case rv" href="#"><h3>«Менеджер по обучению онлайн» для ресторана Quadro</h3><p>«Мы еще не закончили сотрудничество с сервис-менеджером, но уже могу смело сказать, что не жалею, что согласился. Многое становится на свои места»</p><span class="more">Читать <span class="arr">→</span></span></a>
   </div>
 </div></section>
 
-<section id="events"><div class="wrap">
-  <div class="head"><span class="eyebrow">Публикации в СМИ</span><h2>Публикации в СМИ</h2></div>
-  <div class="media">
-    <a class="pub" href="#"><span class="src">ZHAZHDA.BIZ</span><h3>Как обучить онлайн 30 тысяч представителей 3 тысяч ресторанов</h3><p>Об истории успеха ServiceGuru, первых шагах бизнеса, удачах и неудачах, перспективах и планах.</p></a>
-    <a class="pub" href="#"><span class="src">TASS.RU</span><h3>До чего дошел прогресс: как искусственный интеллект меняет сферу услуг</h3><p>О том, как AI меняет сферу услуг, в чем его преимущества перед живым мозгом, а в чем он никогда не сможет заменить человека.</p></a>
-    <a class="pub" href="#"><span class="src">GAZETA.RU</span><h3>Геймификация и e-learning на службе повышения квалификации</h3><p>О корпоративной системе обучения в ресторанах, ее важности и, конечно, о пользе ServiceGuru.</p></a>
-    <a class="pub" href="#"><span class="src">SBER.PRO</span><h3>Правила эффективной аттестации. Как проводить и мотивировать сотрудников участвовать</h3><p>Сергей Горбунов о видах аттестации и ее важности при обучении персонала.</p></a>
-    <a class="pub" href="#"><span class="src">RG.RU</span><h3>Российское онлайн-образование растет на 18 процентов быстрее, чем в 2022 году</h3><p>Нейросетевые технологии станут драйвером роста EdTech и в России, и в мире.</p></a>
-    <a class="pub" href="#"><span class="src">RB.RU</span><h3>Особенности ресторанного бизнеса в Дубае — что нужно знать перед запуском</h3><p>Сергей Горбунов об особенностях ресторанного рынка в Эмиратах</p></a>
-    <a class="pub" href="#"><span class="src">CNEWS.RU</span><h3>Как искусственный интеллект обучит сотрудников и сэкономит деньги?</h3><p>С начала 2023 г. несколько глобальных компаний сообщили о сокращении сотрудников и их замене на искусственный интеллект.</p></a>
-    <a class="pub" href="#"><span class="src">MOSKVICHMAG.RU</span><h3>Освобождение труда: искусственный интеллект будет помощником или конкурентом человека?</h3><p>Государства и компании во всем мире внедряют технологии искусственного интеллекта и машинного обучения.</p></a>
-    <a class="pub" href="#"><span class="src">ALLO.TOCHKA.COM</span><h3>Пишет курсы и рисует картинки: как ChatGPT и другие помогают в бизнесе</h3><p>Как с помощью нейросетей генерируют картинки и тексты для соцсетей, создают обучающие видеоролики, пишут квизы и разрабатывают чат-боты.</p></a>
+<section id="events" style="padding-top:0"><div class="wrap">
+  <div class="head rv"><span class="tag">Публикации в СМИ</span><h2>Публикации в СМИ</h2></div>
+  <div class="pubs rv">
+    <a class="pub" href="#"><span class="src">SKILLBOX.RU</span><div><h3>Кто такой управляющий бизнесом, что он делает и как им стать</h3><p>Это подробный гайд о том, какими навыками должен обладать управляющий бизнесом, за какие процессы он отвечает на самом деле и как вырасти до этой позиции.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">ZHAZHDA.BIZ</span><div><h3>Как обучить онлайн 30 тысяч представителей 3 тысяч ресторанов</h3><p>Об истории успеха ServiceGuru, первых шагах бизнеса, удачах и неудачах, перспективах и планах.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">TASS.RU</span><div><h3>До чего дошел прогресс: как искусственный интеллект меняет сферу услуг</h3><p>О том, как AI меняет сферу услуг, в чем его преимущества перед живым мозгом, а в чем он никогда не сможет заменить человека.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">GAZETA.RU</span><div><h3>Геймификация и e-learning на службе повышения квалификации</h3><p>О корпоративной системе обучения в ресторанах, ее важности и, конечно, о пользе ServiceGuru.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">ALLO.TOCHKA.COM</span><div><h3>Пишет курсы и рисует картинки: как ChatGPT и другие помогают в бизнесе</h3><p>Как с помощью нейросетей генерируют картинки и тексты для соцсетей, создают обучающие видеоролики, пишут квизы и разрабатывают чат-боты.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">SBER.PRO</span><div><h3>Правила эффективной аттестации. Как проводить и мотивировать сотрудников участвовать</h3><p>Сергей Горбунов о видах аттестации и ее важности при обучении персонала.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">RG.RU</span><div><h3>Российское онлайн-образование растет на 18 процентов быстрее, чем в 2022 году</h3><p>Нейросетевые технологии станут драйвером роста EdTech и в России, и в мире.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">RB.RU</span><div><h3>Особенности ресторанного бизнеса в Дубае — что нужно знать перед запуском</h3><p>Сергей Горбунов об особенностях ресторанного рынка в Эмиратах</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">CNEWS.RU</span><div><h3>Как искусственный интеллект обучит сотрудников и сэкономит деньги?</h3><p>С начала 2023 г. несколько глобальных компаний сообщили о сокращении сотрудников и их замене на искусственный интеллект.</p></div><span class="ar">↗</span></a>
+    <a class="pub" href="#"><span class="src">MOSKVICHMAG.RU</span><div><h3>Освобождение труда: искусственный интеллект будет помощником или конкурентом человека?</h3><p>Государства и компании во всем мире внедряют технологии искусственного интеллекта и машинного обучения.</p></div><span class="ar">↗</span></a>
   </div>
 </div></section>
 
-<section class="about" id="faq"><div class="wrap faq">
-  <div><span class="eyebrow">FAQ</span><h2 style="margin:16px 0">Собрали ответы на самые часто задаваемые вопросы</h2><p class="lead">Если вы не нашли ответ на свой вопрос, можете написать нам на почту или позвонить по телефону</p></div>
-  <div>
+<section id="faq" style="padding-top:0"><div class="wrap faq-g">
+  <div class="rv"><span class="tag">FAQ</span><h2 style="margin:18px 0 20px;font-size:clamp(28px,3.6vw,48px)">Собрали ответы на самые часто задаваемые вопросы</h2><p class="lead">Если вы не нашли ответ на свой вопрос, можете написать нам на почту или позвонить по телефону</p></div>
+  <div class="rv">
     <details open><summary>Сколько стоит доступ к платформе?</summary><div class="ans"><p>Стоимость зависит от количества сотрудников и начинается от 170 р. за одного пользователя в месяц.</p></div></details>
     <details><summary>Могу ли я посмотреть демо или получить пробный доступ?</summary><div class="ans"><p>Конечно!</p><p>✔ Вы можете записаться на бесплатную демонстрацию и увидеть все функции вживую.</p><p>✔ Есть пробный период, чтобы протестировать платформу с реальными задачами вашей компании.</p></div></details>
     <details><summary>Все ли смартфоны поддерживают приложение?</summary><div class="ans"><p>Да. Мы сделали одно приложение, которое работает и на iOS, и на Android.</p><p>Оно использует нативные технологии, то есть работает так же быстро и удобно, как приложения от крупных брендов.</p></div></details>
@@ -577,9 +761,10 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
   </div>
 </div></section>
 
-<section class="final" id="demo"><div class="wrap"><div class="box">
-  <div><span class="eyebrow">ServiceGuru бесплатно на 14 дней</span>
-    <h2 style="margin:18px 0 16px">Оставьте заявку, и наши специалисты свяжутся с вами</h2>
+<section class="final" id="demo"><div class="wrap"><div class="panel box rv">
+  <canvas id="fcanvas" aria-hidden="true"></canvas>
+  <div><span class="tag">ServiceGuru бесплатно на 14 дней</span>
+    <h2 style="margin:20px 0 18px">Оставьте заявку, и наши <span class="grad">специалисты свяжутся</span> с вами</h2>
     <p class="lead">Получите доступ к платформе бесплатно на 14 дней и начните обучать сотрудников уже сегодня</p></div>
   <form class="js-form">
     <p style="font-size:14px;color:var(--muted)">Количество сотрудников</p>
@@ -588,16 +773,16 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
     <input type="tel" id="f-tel" placeholder="Телефон" required>
     <input type="email" id="f-mail" placeholder="Ваш email" required>
     <label class="chk"><input type="checkbox" required><span>Нажимая кнопку «Оставить заявку», вы принимаете условия <a href="#">политики конфиденциальности</a></span></label>
-    <button class="btn btn-primary" type="submit">Оставить заявку</button>
+    <button class="btn btn-primary" type="submit">Оставить заявку <span class="arr">→</span></button>
   </form>
 </div></div></section>
 </main>
 
 <footer id="blog"><div class="wrap">
   <div class="foot">
-    <div><a class="logo" href="#top" style="color:var(--fg);padding:0 0 14px"><i></i>ServiceGuru</a>
+    <div><a class="logo" href="#top" style="padding:0 0 16px;color:var(--fg)"><i></i>ServiceGuru</a>
       <p>Платформа для обучения и мотивации сотрудников</p>
-      <p style="margin-top:16px;color:var(--fg)">+7 (499) 647-73-64</p>
+      <p style="margin-top:16px;color:var(--fg);font:500 15px var(--font-mono)">+7 (499) 647-73-64</p>
       <p>Поддержка / support@service.guru</p><p>Бухгалтерия / docs@service.guru</p><p>Продажи / sales@service.guru</p>
       <p style="margin-top:12px">График работы: Ежедневно с 10:00 до 19:00</p></div>
     <div><h4>Платформа</h4><a href="#platform">Возможности платформы</a><a href="#courses">Курсы для обучения</a><a href="#pricing">Тарифы</a><a href="#reviews">Отзывы</a><a href="#faq">FAQ</a><a href="#platform">Функционал</a></div>
@@ -610,14 +795,7 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
     <p>Разработчик и правообладатель Общество с ограниченной ответственностью «СЕРВИС ГУРУ». ServiceGuru — программная платформа собственной разработки для найма, адаптации, обучения, мотивации и управления результатами линейного персонала.</p>
     <p>Вы можете отозвать согласие, написав на support@service.guru</p>
   </div>
-  <div class="stack">
-    <div><b>Backend</b><span>Ruby 3.3, Ruby on Rails 7.1, Grape API, Sidekiq</span></div>
-    <div><b>Frontend</b><span>React 19, TypeScript, Material UI, Vue.js 2.7</span></div>
-    <div><b>Mobile</b><span>React Native для iOS и Android, NativeBase</span></div>
-    <div><b>Базы данных</b><span>PostgreSQL 15, TimescaleDB, Redis, Elasticsearch, Cube.js</span></div>
-    <div><b>Инфраструктура</b><span>Docker, AWS S3 / Selectel, MinIO, Firebase</span></div>
-    <div><b>DevOps и мониторинг</b><span>GitLab CI/CD, Ansible, HashiCorp Vault, Zabbix, Sentry</span></div>
-  </div>
+  <div class="giant" aria-hidden="true">ServiceGuru</div>
 </div></footer>
 
 <div class="dock" id="dock">
@@ -626,25 +804,129 @@ footer{border-top:1px solid var(--line);padding-block:56px 40px;background:var(-
     <a class="opt" href="#demo"><i>▶</i>Записаться на Демо</a>
     <span class="opt"><i>☎</i>+7 (499) 647-73-64</span>
   </div>
-  <button class="fab" id="fab" aria-label="Связаться с нами" aria-expanded="false">✉</button>
+  <button class="fab" id="fab" aria-label="Связаться с нами" aria-expanded="false"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></button>
 </div>
 <div class="toast" id="toast">Макет: форма не отправляется</div>
 
 <script>
 (function(){
-  var $=function(s){return document.querySelector(s)};
+  var $=function(s,r){return (r||document).querySelector(s)},$$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))};
+  var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function light(){var a=document.documentElement.getAttribute('data-theme');return a?a==='light':matchMedia('(prefers-color-scheme: light)').matches}
+  function cv(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+
+  /* nav, dock, theme, forms */
   var burger=$('#burger'),menu=$('#menu');
   burger.addEventListener('click',function(){var o=menu.classList.toggle('open');burger.setAttribute('aria-expanded',o)});
   menu.addEventListener('click',function(e){if(e.target.tagName==='A')menu.classList.remove('open')});
   var dock=$('#dock'),fab=$('#fab');
   fab.addEventListener('click',function(){var o=dock.classList.toggle('open');fab.setAttribute('aria-expanded',o)});
-  var toast=$('#toast'),t;
-  document.querySelectorAll('.js-form').forEach(function(f){f.addEventListener('submit',function(e){e.preventDefault();toast.classList.add('on');clearTimeout(t);t=setTimeout(function(){toast.classList.remove('on')},2200)})});
-  var btn=$('#theme'),root=document.documentElement;
-  btn.addEventListener('click',function(){
-    var dark=root.getAttribute('data-theme')?root.getAttribute('data-theme')==='dark':!matchMedia('(prefers-color-scheme: light)').matches;
-    root.setAttribute('data-theme',dark?'light':'dark');
+  var toast=$('#toast'),tt;
+  $$('.js-form').forEach(function(f){f.addEventListener('submit',function(e){e.preventDefault();toast.classList.add('on');clearTimeout(tt);tt=setTimeout(function(){toast.classList.remove('on')},2200)})});
+  $('#theme').addEventListener('click',function(){
+    var r=document.documentElement,a=r.getAttribute('data-theme');
+    var dark=a?a==='dark':!matchMedia('(prefers-color-scheme: light)').matches;
+    r.setAttribute('data-theme',dark?'light':'dark');
   });
+
+  /* spotlight edge on panels */
+  document.addEventListener('pointermove',function(e){
+    var p=e.target.closest&&e.target.closest('.panel');
+    if(!p)return;var r=p.getBoundingClientRect();
+    p.style.setProperty('--mx',(e.clientX-r.left)+'px');p.style.setProperty('--my',(e.clientY-r.top)+'px');
+  },{passive:true});
+
+  /* reveal: stage only what is below the fold, with a failsafe */
+  var rv=$$('.rv');
+  if('IntersectionObserver' in window && !reduce){
+    var vh=innerHeight;
+    rv.forEach(function(el){if(el.getBoundingClientRect().top>vh*.92)el.classList.add('pre')});
+    var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting||en.boundingClientRect.top<0){en.target.classList.remove('pre');io.unobserve(en.target)}})},{threshold:.08,rootMargin:'0px 0px -6% 0px'});
+    rv.forEach(function(el){if(el.classList.contains('pre'))io.observe(el)});
+    setTimeout(function(){$$('.rv.pre').forEach(function(el){if(el.getBoundingClientRect().top<innerHeight*1.5)el.classList.remove('pre')})},4000);
+  }
+
+  /* counters */
+  function count(el){
+    var to=+el.dataset.count,pre=el.dataset.pre||'',suf=el.dataset.suf||'';
+    if(reduce){el.textContent=pre+to+suf;return}
+    var t0=performance.now(),d=1400;
+    (function f(t){var k=Math.min(1,(t-t0)/d),e=1-Math.pow(1-k,4);el.textContent=pre+Math.round(to*e)+suf;if(k<1)requestAnimationFrame(f)})(t0);
+  }
+  if('IntersectionObserver' in window){
+    var co=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting||en.boundingClientRect.top<0){count(en.target);co.unobserve(en.target)}})},{threshold:.4});
+    $$('[data-count]').forEach(function(el){co.observe(el)});
+    var go=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting||en.boundingClientRect.top<0){en.target.classList.add('vis-in');go.unobserve(en.target)}})},{threshold:.3});
+    go.observe($('#gaugebox'));
+  }else{$('#gaugebox').classList.add('vis-in')}
+
+  /* simulator: chips <-> screens */
+  var chips=$$('.chip'),scrs=$$('.scr'),cur=0,timer;
+  function show(i){
+    cur=i;chips.forEach(function(c,k){c.classList.toggle('on',k===i);c.setAttribute('aria-selected',k===i)});
+    scrs.forEach(function(s,k){s.classList.toggle('on',k===i)});
+    var on=chips[i];on.classList.remove('on');void on.offsetWidth;on.classList.add('on');
+    if(i===1)startLB();
+  }
+  function auto(){clearInterval(timer);if(reduce)return;timer=setInterval(function(){show((cur+1)%chips.length)},4200)}
+  chips.forEach(function(c,k){c.addEventListener('click',function(){show(k);auto()})});
+  auto();
+
+  /* live leaderboard with FLIP re-ranking */
+  var people=[['Анна К.','',1240],['Игорь М.','b',1118],['Мария С.','c',1046],['Денис Л.','d',982],['Ольга В.','e',931]];
+  var lb=$('#lb'),rows=[],lbt;
+  people.forEach(function(p){
+    var r=document.createElement('div');r.className='lbrow';
+    r.innerHTML='<span class="rk"></span><span class="av '+p[1]+'"></span>'+p[0]+'<b>'+p[2]+'</b>';
+    lb.appendChild(r);rows.push({el:r,pts:p[2],b:r.querySelector('b'),rk:r.querySelector('.rk')});
+  });
+  function layout(){
+    var sorted=rows.slice().sort(function(a,b){return b.pts-a.pts}),h=rows[0].el.offsetHeight+8;
+    sorted.forEach(function(r,i){r.rk.textContent=i+1;r.el.style.transform='translateY('+((i-rows.indexOf(r))*h)+'px)'});
+  }
+  function tick(){
+    var r=rows[Math.floor(Math.random()*rows.length)],add=30+Math.floor(Math.random()*120);
+    r.pts+=add;r.b.textContent=r.pts;r.el.classList.add('up');setTimeout(function(){r.el.classList.remove('up')},900);layout();
+  }
+  function startLB(){clearInterval(lbt);layout();if(!reduce)lbt=setInterval(function(){if(cur!==1){clearInterval(lbt);return}tick()},1300)}
+  requestAnimationFrame(layout);
+
+  /* device tilt */
+  var stage=$('#stage'),dev=$('#device');
+  if(!reduce&&matchMedia('(hover:hover)').matches){
+    stage.addEventListener('pointermove',function(e){var r=stage.getBoundingClientRect(),x=(e.clientX-r.left)/r.width-.5,y=(e.clientY-r.top)/r.height-.5;dev.style.transform='rotateY('+(-10+x*16)+'deg) rotateX('+(4-y*12)+'deg)'});
+    stage.addEventListener('pointerleave',function(){dev.style.transform=''});
+  }
+
+  /* like */
+  var like=$('#like'),likes=$('#likes');
+  like.addEventListener('click',function(){var on=like.getAttribute('aria-pressed')==='true';like.setAttribute('aria-pressed',!on);likes.textContent=on?24:25});
+
+  /* aurora + glow canvases */
+  function glow(canvas,cfg){
+    var ctx=canvas.getContext('2d'),w,h,dpr=Math.min(devicePixelRatio||1,1.5),run=true,t0=performance.now();
+    function size(){var r=canvas.getBoundingClientRect();w=canvas.width=Math.max(1,r.width*dpr);h=canvas.height=Math.max(1,r.height*dpr)}
+    size();addEventListener('resize',size);
+    function frame(now){
+      var t=(now-t0)/1000*cfg.speed,cols=[cv('--cyan'),cv('--violet'),cv('--lime'),cv('--cyan')];
+      ctx.clearRect(0,0,w,h);
+      ctx.globalCompositeOperation=light()?'source-over':'lighter';
+      for(var i=0;i<cfg.n;i++){
+        var x=w*(.5+.42*Math.sin(t*(.6+i*.23)+i*2.1)),y=h*(.45+.34*Math.cos(t*(.5+i*.19)+i*1.3)),r=Math.max(w,h)*(cfg.r+.07*Math.sin(t+i));
+        var g=ctx.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,cols[i%cols.length]);g.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.globalAlpha=cfg.a*(light()?.42:1);ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+      }
+      ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+    }
+    frame(performance.now());
+    if(reduce)return;
+    var io2=new IntersectionObserver(function(es){run=es[0].isIntersecting;if(run)loop()});io2.observe(canvas);
+    function loop(){if(!run)return;frame(performance.now());requestAnimationFrame(loop)}
+    loop();
+  }
+  glow($('#aurora'),{n:4,r:.42,a:.30,speed:.45});
+  glow($('#vcanvas'),{n:3,r:.5,a:.35,speed:.6});
+  glow($('#fcanvas'),{n:3,r:.55,a:.22,speed:.5});
 })();
 </script>
 
