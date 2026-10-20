@@ -101,6 +101,20 @@ async def get_db():
         await con.close()
 
 
+@app.get("/api/health")
+async def health():
+    """Диагностика без секретов: какие переменные заданы и отвечает ли база."""
+    res = {k: bool(os.environ.get(k)) for k in ("APP_PASSWORD", "SECRET_KEY", "CRON_SECRET", "DATABASE_URL")}
+    try:
+        con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
+        await con.execute(SCHEMA)
+        await con.close()
+        res["db"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        res["db"] = f"error: {type(e).__name__}"
+    return res
+
+
 # ---------- вход ----------
 class LoginIn(BaseModel):
     password: str
@@ -442,15 +456,19 @@ label{display:block;font-size:13px;color:var(--mut);margin:8px 0 3px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.row>*{flex:1;min-width:130px}
 .item{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--bd)}
 .mut{color:var(--mut);font-size:13px}.err{color:#d33}.btns{display:flex;gap:6px;flex-wrap:wrap}
-</style></head><body><main id="app"></main><script>
+#msg{position:fixed;top:12px;left:50%;transform:translateX(-50%);max-width:92vw;padding:10px 14px;border-radius:8px;
+background:#1b1f24;color:#fff;display:none;z-index:9;white-space:pre-wrap}#msg.bad{background:#d33}
+</style></head><body><div id="msg"></div><main id="app"></main><script>
+function note(t,bad){const m=document.querySelector('#msg');m.textContent=t;m.className=bad?'bad':'';m.style.display='block';
+ clearTimeout(note.t);note.t=setTimeout(()=>m.style.display='none',bad?15000:6000)}
 const $=s=>document.querySelector(s),app=$('#app');
 async function api(m,u,b){const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
  if(r.status==401&&u!=='/api/login'){login();throw 0}const d=await r.json().catch(()=>({}));
- if(!r.ok){alert(d.detail||'Ошибка');throw d}return d}
+ if(!r.ok){note(d.detail||('Ошибка '+r.status),1);throw d}return d}
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function login(){app.innerHTML=`<div class="card" style="max-width:340px;margin:60px auto"><h2>Вход</h2>
 <input id=pw type=password placeholder="Пароль" style="width:100%"><br><br><button id=go style="width:100%">Войти</button></div>`;
- const go=async()=>{await api('POST','/api/login',{password:$('#pw').value});main()};
+ const go=async()=>{try{await api('POST','/api/login',{password:$('#pw').value})}catch{return}main()};
  $('#go').onclick=go;$('#pw').onkeydown=e=>e.key==='Enter'&&go()}
 async function main(){
  let accs,camps;try{[accs,camps]=await Promise.all([api('GET','/api/accounts'),api('GET','/api/campaigns')])}catch{return}
@@ -482,13 +500,13 @@ async function main(){
  $('#cc').onclick=async()=>{const r=await api('POST','/api/campaigns',{name:$('#cn').value,text:$('#ct').value,
   account_ids:[...document.querySelectorAll('.ca:checked')].map(x=>+x.value),kinds:[...document.querySelectorAll('.ck:checked')].map(x=>x.value),
   per_minute:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value});
-  alert('Создано, контактов: '+r.targets+'. Нажмите «Запустить».');main()}}
+  note('Создано, контактов: '+r.targets+'. Нажмите «Запустить».');main()}}
 async function code(id){const c=prompt('Код из Telegram');if(!c)return;const p=prompt('Пароль 2FA (если нет — оставьте пустым)')||null;await api('POST',`/api/accounts/${id}/code`,{code:c,password:p});main()}
-async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);alert('Чатов: '+r.synced)}finally{main()}}
+async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced)}finally{main()}}
 async function delAcc(id){if(confirm('Удалить аккаунт?')){await api('DELETE','/api/accounts/'+id);main()}}
 async function delC(id){if(confirm('Удалить рассылку?')){await api('DELETE','/api/campaigns/'+id);main()}}
 async function st(id,s){await api('POST',`/api/campaigns/${id}/status`,{status:s});main()}
-api('GET','/api/me').then(main).catch(()=>{});
+api('GET','/api/me').then(main).catch(e=>{if(e!==0)login()});
 </script></body></html>"""
 
 
