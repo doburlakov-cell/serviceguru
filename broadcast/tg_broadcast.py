@@ -1,11 +1,11 @@
 """Рассылка по рабочим чатам с нескольких Telegram-аккаунтов (Telethon).
 
-Пишет только в чаты, которые есть в списке из CRM (--allow-file).
+Пишет либо в чаты из списка (--allow-file), либо во все доступные диалоги (--all).
 
 Команды:
   login  <имя>                  войти в аккаунт (код из Telegram), создаёт сессию
   chats                         выгрузить чаты всех аккаунтов в chats.csv (ничего не отправляет)
-  send   --text-file msg.txt --allow-file crm.txt    разослать; --dry-run только показать план
+  send   --text-file msg.txt --all    разослать (или --allow-file список.txt); --dry-run только показать план
 """
 import argparse
 import asyncio
@@ -110,12 +110,12 @@ def keys(row):
 
 
 def plan(all_rows, allow, exclude, sent):
-    """Один чат — один аккаунт; только чаты из CRM-списка; без исключённых и уже отправленных."""
+    """Один чат — один аккаунт; allow=None значит все; без исключённых и уже отправленных."""
     seen, by_acc = set(), {}
     for r in all_rows:
         cid = r["chat_id"]
         k = keys(r)
-        if cid in seen or cid in sent or not (k & allow) or (k & exclude):
+        if cid in seen or cid in sent or (allow is not None and not (k & allow)) or (k & exclude):
             continue
         seen.add(cid)
         by_acc.setdefault(r["account"], []).append(r)
@@ -183,8 +183,10 @@ async def worker(acc, rows, template, dry):
 
 async def cmd_send(args):
     template = Path(args.text_file).read_text(encoding="utf-8").strip()
-    allow = load_list(Path(args.allow_file))
-    if not allow:
+    if args.all == bool(args.allow_file):
+        sys.exit("Укажите ровно одно: --all (все диалоги) или --allow-file список.txt")
+    allow = None if args.all else load_list(Path(args.allow_file))
+    if allow is not None and not allow:
         sys.exit("Список --allow-file пуст или не найден: отправлять некому")
     rows = await gather_rows(set(args.kinds.split(",")))
     by_acc = plan(rows, allow, load_list(EXCLUDE_FILE), load_sent())
@@ -208,7 +210,8 @@ def main():
     s.set_defaults(fn=cmd_chats)
     s = sub.add_parser("send")
     s.add_argument("--text-file", required=True)
-    s.add_argument("--allow-file", required=True, help="выгрузка из CRM: id / @username / телефон по строке")
+    s.add_argument("--all", action="store_true", help="писать во все доступные диалоги аккаунтов")
+    s.add_argument("--allow-file", help="писать только тем, кто в списке: id / @username / телефон по строке")
     s.add_argument("--kinds", default="user,group,supergroup", help=kinds_help)
     s.add_argument("--limit", type=int, help="максимум чатов на аккаунт (для пробного запуска)")
     s.add_argument("--dry-run", action="store_true")
