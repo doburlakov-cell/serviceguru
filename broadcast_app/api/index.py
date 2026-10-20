@@ -62,6 +62,9 @@ create table if not exists campaigns(
   status text default 'draft', created_at timestamptz default now());
 alter table campaigns add column if not exists media_id int;
 alter table campaigns add column if not exists tested_at timestamptz;
+alter table campaigns add column if not exists start_at timestamptz;
+alter table media add column if not exists created_at timestamptz default now();
+create table if not exists tested(key text primary key, at timestamptz default now());
 create table if not exists targets(
   id serial primary key, campaign_id int references campaigns(id) on delete cascade,
   account_id int, chat_id bigint, title text, status text default 'pending',
@@ -453,6 +456,25 @@ class CampaignIn(BaseModel):
     window_end: int = 24
     tz: str = "Europe/Moscow"
     exclude: str = ""           # id или @username по строке, только для этой рассылки
+    start_at: str | None = None  # локальное время в поясе tz, например 2026-10-21T10:00
+
+
+def test_key(text: str, media_id) -> str:
+    return hashlib.sha256(f"{(text or '').strip()}|{media_id or ''}".encode()).hexdigest()
+
+
+def parse_local(value: str, tz: str) -> datetime:
+    """Время из выбора даты (без пояса) трактуется в часовом поясе рассылки."""
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, "Неверная дата и время")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(tz))
+    dt = dt.astimezone(timezone.utc)
+    if dt < datetime.now(timezone.utc) - timedelta(minutes=2):
+        raise HTTPException(400, "Это время уже прошло")
+    return dt
 
 
 @app.get("/api/campaigns", dependencies=[Depends(auth)])
@@ -479,6 +501,11 @@ async def create_campaign(b: CampaignIn, con=Depends(get_db)):
         raise HTTPException(400, "Неизвестный часовой пояс")
     if b.media_id and not await con.fetchval("select 1 from media where id=$1", b.media_id):
         raise HTTPException(400, "Фото не найдено, загрузите заново")
+    start_utc = parse_local(b.start_at, b.tz) if b.start_at else None
+    tested = bool(await con.fetchval(
+        "select 1 from tested where key=$1 and at > now() - interval '24 hours'", test_key(b.text, b.media_id)))
+    if start_utc and not tested:
+        raise HTTPException(400, "Сначала нажмите «Тест» с этим текстом и фото")
     exclude = {l.strip().lower().lstrip("@") for l in b.exclude.splitlines() if l.strip()}
     chats = await con.fetch(
         "select c.account_id, c.chat_id, c.title, c.username from chats c "
@@ -497,9 +524,10 @@ async def create_campaign(b: CampaignIn, con=Depends(get_db)):
         raise HTTPException(400, "Нет чатов: сначала нажмите «Синхронизировать чаты» у аккаунтов")
     cid = await con.fetchval(
         "insert into campaigns(name, text, media_id, account_ids, kinds, max_contacts, per_minute, per_day, "
-        "window_start, window_end, tz) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id",
+        "window_start, window_end, tz, status, start_at, tested_at) "
+        "values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $14::boolean then now() end) returning id",
         b.name, b.text, b.media_id, b.account_ids, b.kinds, b.max_contacts, b.per_minute, b.per_day,
-        b.window_start, b.window_end, b.tz)
+        b.window_start, b.window_end, b.tz, "scheduled" if start_utc else "draft", start_utc, tested)
     await con.executemany(
         "insert into targets(campaign_id, account_id, chat_id, title) values($1,$2,$3,$4)",
         [(cid, a, ch, t) for a, ch, t in targets])
@@ -520,24 +548,21 @@ async def set_status(cid: int, b: StatusIn, con=Depends(get_db)):
     return {"ok": True}
 
 
-@app.post("/api/campaigns/{cid}/test", dependencies=[Depends(auth)])
-async def test_campaign(cid: int, con=Depends(get_db)):
-    c = await con.fetchrow("select * from campaigns where id=$1", cid)
-    if not c:
-        raise HTTPException(404, "Рассылка не найдена")
+async def send_test(con, account_ids, text, media_id):
+    """Отправляет текст и фото всем тестовым получателям с первого доступного аккаунта."""
     recipients = await con.fetch("select * from test_recipients order by id")
     if not recipients:
         raise HTTPException(400, "Добавьте тестовых получателей на вкладке «Тест»")
     now = datetime.now(timezone.utc)
     acc = None
-    for aid in c["account_ids"]:
+    for aid in account_ids:
         a = await con.fetchrow("select * from accounts where id=$1 and status='active'", aid)
         if a and not (a["blocked_until"] and a["blocked_until"] > now):
             acc = a
             break
     if not acc:
         raise HTTPException(400, "Нет доступного аккаунта для отправки теста")
-    media = await con.fetchrow("select filename, data from media where id=$1", c["media_id"]) if c["media_id"] else None
+    media = await con.fetchrow("select filename, data from media where id=$1", media_id) if media_id else None
     results = []
     async with client_for(acc) as client:
         for r in recipients:
@@ -550,15 +575,60 @@ async def test_campaign(cid: int, con=Depends(get_db)):
                     peer = peer_of(row) if row else int(target)
                 else:
                     peer = target
-                text = c["text"].replace("{name}", first_word(r["label"]))
-                await deliver(client, peer, text, media)
+                await deliver(client, peer, text.replace("{name}", first_word(r["label"])), media)
                 results.append({"label": r["label"], "ok": True})
             except Exception as e:  # noqa: BLE001
                 results.append({"label": r["label"], "ok": False, "error": type(e).__name__ + ": " + str(e)[:120]})
             await asyncio.sleep(2)
-    if any(x["ok"] for x in results):
-        await con.execute("update campaigns set tested_at=now() where id=$1", cid)
     return {"account": acc["name"], "results": results}
+
+
+class TestSendIn(BaseModel):
+    text: str = ""
+    media_id: int | None = None
+    account_ids: list[int]
+
+
+@app.post("/api/test-send", dependencies=[Depends(auth)])
+async def test_send(b: TestSendIn, con=Depends(get_db)):
+    """Тест из формы новой рассылки: рассылка ещё не создана, успех запоминается по тексту и фото."""
+    if not (b.text.strip() or b.media_id):
+        raise HTTPException(400, "Нужны текст или фото")
+    out = await send_test(con, b.account_ids, b.text, b.media_id)
+    if any(x["ok"] for x in out["results"]):
+        await con.execute(
+            "insert into tested(key, at) values($1, now()) on conflict(key) do update set at=now()",
+            test_key(b.text, b.media_id))
+    return out
+
+
+@app.post("/api/campaigns/{cid}/test", dependencies=[Depends(auth)])
+async def test_campaign(cid: int, con=Depends(get_db)):
+    c = await con.fetchrow("select * from campaigns where id=$1", cid)
+    if not c:
+        raise HTTPException(404, "Рассылка не найдена")
+    out = await send_test(con, c["account_ids"], c["text"], c["media_id"])
+    if any(x["ok"] for x in out["results"]):
+        await con.execute("update campaigns set tested_at=now() where id=$1", cid)
+    return out
+
+
+class ScheduleIn(BaseModel):
+    start_at: str
+
+
+@app.post("/api/campaigns/{cid}/schedule", dependencies=[Depends(auth)])
+async def schedule_campaign(cid: int, b: ScheduleIn, con=Depends(get_db)):
+    c = await con.fetchrow("select * from campaigns where id=$1", cid)
+    if not c:
+        raise HTTPException(404, "Рассылка не найдена")
+    if c["status"] == "done":
+        raise HTTPException(400, "Рассылка уже завершена")
+    if not c["tested_at"]:
+        raise HTTPException(400, "Сначала отправьте тест на тестовые аккаунты")
+    start_utc = parse_local(b.start_at, c["tz"])
+    await con.execute("update campaigns set status='scheduled', start_at=$2 where id=$1", cid, start_utc)
+    return {"start_at": start_utc.isoformat()}
 
 
 @app.delete("/api/campaigns/{cid}", dependencies=[Depends(auth)])
@@ -660,6 +730,10 @@ async def tick(request: Request):
     con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
     try:
         await ensure_schema(con)
+        await con.execute("update campaigns set status='running' where status='scheduled' and start_at <= now()")
+        await con.execute(
+            "delete from media where created_at < now() - interval '1 day' "
+            "and id not in (select media_id from campaigns where media_id is not null)")
         camps = await con.fetch("select * from campaigns where status='running'")
         if camps:
             # исключённые после создания рассылки контакты пропускаем
@@ -745,7 +819,7 @@ async function api(m,u,b,form){const o={method:m,headers:{}};if(form)o.body=b;el
  if(!r.ok){const det=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;note(det||('Ошибка '+r.status),1);throw d}return d}
 function modal(html){const m=document.createElement('div');m.className='modal';m.innerHTML='<div>'+html+'</div>';
  m.addEventListener('click',e=>{if(e.target===m)m.remove()});document.body.appendChild(m);return m}
-const stMap={draft:['черновик',''],running:['идёт','ok'],paused:['пауза','warn'],done:['завершена','pur'],active:['активен','ok'],code_sent:['ждёт код','warn'],error:['ошибка','bad']};
+const stMap={draft:['черновик',''],running:['идёт','ok'],scheduled:['запланирована','pur'],paused:['пауза','warn'],done:['завершена','pur'],active:['активен','ok'],code_sent:['ждёт код','warn'],error:['ошибка','bad']};
 const pill=s=>{const [t,c]=stMap[s]||[s,''];return `<span class="pill ${c}">${t}</span>`};
 const kindName={user:'личный',group:'группа',supergroup:'супергруппа',channel:'канал'};
 
@@ -784,9 +858,12 @@ async function campaignsView(){
  <div class="card"><h2>Рассылки</h2>${camps.map(c=>`<div class="item"><div style="display:flex;gap:12px;align-items:center;min-width:0">
   ${c.media_id?`<img class="thumb" src="/api/media/${c.media_id}">`:''}<div style="min-width:0"><b>${esc(c.name)}</b> ${pill(c.status)}
   <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''} · ${c.per_minute}/мин · ${c.window_start}–${c.window_end} ч</div>
+  ${c.status==='scheduled'&&c.start_at?`<div class="mut" style="color:var(--purple)">Старт: ${new Date(c.start_at).toLocaleString('ru',{timeZone:c.tz,dateStyle:'short',timeStyle:'short'})} (${esc(c.tz)})</div>`:''}
   ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}</div></div>
   <div class="btns"><button class="btn sec sm" onclick="prevC(${c.id})">Предпросмотр</button><button class="btn sec sm" onclick="testC(${c.id},this)">Тест</button>
-  ${c.status==='running'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Пауза</button>`:c.status!=='done'?`<button class="btn sm" ${c.tested_at?'':'disabled title="Сначала отправьте тест"'} onclick="st(${c.id},'running')">Запустить</button>`:''}
+  ${c.status==='running'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Пауза</button>`
+   :c.status==='scheduled'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Отменить запуск</button>`
+   :c.status!=='done'?`<button class="btn sm" ${c.tested_at?'':'disabled title="Сначала отправьте тест"'} onclick="st(${c.id},'running')">Запустить</button><button class="btn sec sm" ${c.tested_at?'':'disabled title="Сначала отправьте тест"'} onclick="schedC(${c.id},'${esc(c.tz)}')">Запланировать</button>`:''}
   <button class="btn sec sm" onclick="tg(${c.id})">Детали</button><button class="btn dng sm" onclick="delC(${c.id})">Удалить</button></div></div>`).join('')||'<p class="mut">Пока нет рассылок</p>'}</div>
  <div class="card"><h2>Новая рассылка</h2>
  <label style="margin-top:0">Название</label><input id="cn">
@@ -800,22 +877,36 @@ async function campaignsView(){
  <div class="row"><div><label>Отправлять с (час)</label><input id="ws" type="number" value="9" min="0" max="23"></div><div><label>до (час)</label><input id="we" type="number" value="20" min="1" max="24"></div>
  <div><label>Часовой пояс</label><input id="tz" value="Europe/Moscow"></div></div>
  <label>Не писать в этой рассылке (id или @username, по строке; постоянные исключения — на вкладке «Контакты»)</label><textarea id="ex" rows="2"></textarea>
- <div class="btns" style="margin-top:16px"><button class="btn" id="cc">Создать (на паузе)</button></div>
- <p class="mut">Запуск откроется после отправки теста на тестовые аккаунты (${tests.length} в списке).</p></div></div>
+ <div class="btns" style="margin-top:16px"><button class="btn sec" id="ct2">Тест</button><button class="btn" id="cc">Создать (на паузе)</button><button class="btn sec" id="cs">Запланировать рассылку</button></div>
+ <p class="mut">«Тест» отправляет это сообщение тестовым получателям (${tests.length} в списке, вкладка «Тест»). Запуск и планирование открываются после успешного теста.</p></div></div>
  <div class="sticky"><div class="card"><h2>Как увидит получатель</h2><div id="pv"></div><label>Имя в примере</label><input id="pn" value="Анна"></div></div></div>`;
  let img=null;const upd=()=>{$('#pv').innerHTML=phone($('#ct').value,img,(act[0]||{}).name,$('#pn').value)};
  $('#ct').oninput=upd;$('#pn').oninput=upd;upd();
  $('#cf').onchange=e=>{const f=e.target.files[0];if(!f){img=null;return upd()}if(f.size>4e6){note('Фото больше 4 МБ',1);e.target.value='';img=null;return upd()}img=URL.createObjectURL(f);upd()};
- $('#cc').onclick=async()=>{const b=$('#cc');b.disabled=true;try{let media_id=null;const f=$('#cf').files[0];
-  if(f){const fd=new FormData();fd.append('file',f);media_id=(await api('POST','/api/media',fd,true)).id}
-  const r=await api('POST','/api/campaigns',{name:$('#cn').value||'Без названия',text:$('#ct').value,media_id,account_ids:$$('.ca:checked').map(x=>+x.value),kinds:$$('.ck:checked').map(x=>x.value),
-   per_minute:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value});
-  note('Создано, контактов: '+r.targets+'. Отправьте тест и запустите.');campaignsView()}catch{}finally{b.disabled=false}}}
+ let up=null;
+ const ensureMedia=async()=>{const f=$('#cf').files[0];if(!f)return null;const sig=f.name+f.size+f.lastModified;if(up&&up.sig===sig)return up.id;
+  const fd=new FormData();fd.append('file',f);const id=(await api('POST','/api/media',fd,true)).id;up={sig,id};return id};
+ const accIds=()=>$$('.ca:checked').map(x=>+x.value);
+ const body=async extra=>({name:$('#cn').value||'Без названия',text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds(),kinds:$$('.ck:checked').map(x=>x.value),
+  per_minute:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value,...extra});
+ $('#ct2').onclick=async()=>{const b=$('#ct2');b.disabled=true;b.textContent='Отправка…';try{
+  const r=await api('POST','/api/test-send',{text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds()});showTest(r)}catch{}finally{b.disabled=false;b.textContent='Тест'}};
+ $('#cc').onclick=async()=>{const b=$('#cc');b.disabled=true;try{const r=await api('POST','/api/campaigns',await body());
+  note('Создано, контактов: '+r.targets+'. Отправьте тест и запустите.');campaignsView()}catch{}finally{b.disabled=false}};
+ $('#cs').onclick=()=>pickTime($('#tz').value,async when=>{const r=await api('POST','/api/campaigns',await body({start_at:when}));
+  note('Запланировано, контактов: '+r.targets);campaignsView()})}
+function pickTime(tz,cb){const pad=n=>String(n).padStart(2,'0');const d=new Date(Date.now()+3600e3);
+ const def=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`;
+ const m=modal(`<h2>Запланировать рассылку</h2><label style="margin-top:0">Дата и время запуска</label><input type="datetime-local" id="sd" value="${def}">
+  <p class="mut">Время указывается по часовому поясу рассылки: ${esc(tz)}. После старта сообщения отправляются в заданное окно часов и с заданной скоростью.</p>
+  <div class="btns"><button class="btn" id="sok">Запланировать</button><button class="btn sec" onclick="this.closest('.modal').remove()">Отмена</button></div>`);
+ $('#sok').onclick=async()=>{const v=$('#sd').value;if(!v){note('Выберите дату и время',1);return}const b=$('#sok');b.disabled=true;try{await cb(v);m.remove()}catch{b.disabled=false}}}
+function schedC(id,tz){pickTime(tz,async when=>{await api('POST',`/api/campaigns/${id}/schedule`,{start_at:when});note('Запуск запланирован');campaignsView()})}
+function showTest(r){modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>':`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
+ <div class="btns" style="margin-top:14px"><button class="btn" onclick="this.closest('.modal').remove()">Готово</button></div>`)}
 async function prevC(id){const c=(await api('GET','/api/campaigns')).find(x=>x.id===id);
  modal(phone(c.text,c.media_id?'/api/media/'+c.media_id:null,'ServiceGuru','Анна')+'<div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest(\'.modal\').remove()">Закрыть</button></div>')}
-async function testC(id,b){b.disabled=true;b.textContent='Отправка…';try{const r=await api('POST',`/api/campaigns/${id}/test`);
- modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>':`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
- <div class="btns" style="margin-top:14px"><button class="btn" onclick="this.closest('.modal').remove()">Готово</button></div>`)}catch{}finally{campaignsView()}}
+async function testC(id,b){b.disabled=true;b.textContent='Отправка…';try{showTest(await api('POST',`/api/campaigns/${id}/test`))}catch{}finally{campaignsView()}}
 async function st(id,s){try{await api('POST',`/api/campaigns/${id}/status`,{status:s})}catch{}campaignsView()}
 async function delC(id){if(confirm('Удалить рассылку?')){await api('DELETE','/api/campaigns/'+id);campaignsView()}}
 async function tg(id){const r=await api('GET',`/api/campaigns/${id}/targets`);const L={pending:'в очереди',sending:'отправка',sent:'отправлено',failed:'ошибка',skipped:'пропущен'};const C={sent:'ok',failed:'bad',skipped:'warn'};
