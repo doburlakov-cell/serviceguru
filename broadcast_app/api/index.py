@@ -67,6 +67,8 @@ alter table campaigns add column if not exists media_id int;
 alter table campaigns add column if not exists tested_at timestamptz;
 alter table campaigns add column if not exists start_at timestamptz;
 alter table campaigns add column if not exists per_hour int;
+alter table campaigns add column if not exists dedupe boolean default true;
+alter table campaigns add column if not exists dupes int default 0;
 update campaigns set per_hour = per_minute * 60 where per_hour is null;
 alter table media add column if not exists created_at timestamptz default now();
 create table if not exists tested(key text primary key, at timestamptz default now());
@@ -95,7 +97,7 @@ create table if not exists conversations(
   unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
   primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 4   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 5   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -542,6 +544,7 @@ class CampaignIn(BaseModel):
     window_end: int = 24
     tz: str = "Europe/Moscow"
     exclude: str = ""           # id или @username по строке, только для этой рассылки
+    dedupe: bool = True         # дубликатор: один человек — одно сообщение с одного аккаунта
     start_at: str | None = None  # локальное время в поясе tz, например 2026-10-21T10:00
 
 
@@ -561,6 +564,34 @@ def parse_local(value: str, tz: str) -> datetime:
     if dt < datetime.now(timezone.utc) - timedelta(minutes=2):
         raise HTTPException(400, "Это время уже прошло")
     return dt
+
+
+def assign_targets(rows, dedupe):
+    """rows: строки chats (account_id, chat_id, title, hist). Возвращает (цели, число убранных дублей).
+    Дубликатор: человек, который есть у нескольких аккаунтов, получает одно сообщение — с аккаунта,
+    где уже есть переписка с ним, иначе с наименее загруженного."""
+    if not dedupe:
+        return [(r["account_id"], r["chat_id"], r["title"]) for r in rows], 0
+    by_chat: dict[int, list] = {}
+    for r in rows:
+        by_chat.setdefault(r["chat_id"], []).append(r)
+    load: dict[int, int] = {}
+    chosen = []
+    for chat_id, cands in by_chat.items():           # сначала те, кто есть только у одного аккаунта
+        if len(cands) == 1:
+            r = cands[0]
+            load[r["account_id"]] = load.get(r["account_id"], 0) + 1
+            chosen.append((r["account_id"], chat_id, r["title"]))
+    for chat_id, cands in sorted(by_chat.items()):   # затем дубли
+        if len(cands) == 1:
+            continue
+        with_hist = [r for r in cands if r["hist"]]
+        pool = with_hist or cands
+        r = min(pool, key=lambda x: (load.get(x["account_id"], 0), x["account_id"]))
+        load[r["account_id"]] = load.get(r["account_id"], 0) + 1
+        chosen.append((r["account_id"], chat_id, r["title"]))
+    chosen.sort(key=lambda t: (t[0], t[1]))
+    return chosen, len(rows) - len(chosen)
 
 
 @app.get("/api/campaigns", dependencies=[Depends(auth)])
@@ -594,16 +625,13 @@ async def create_campaign(b: CampaignIn, con=Depends(get_db)):
         raise HTTPException(400, "Сначала нажмите «Тест» с этим текстом и фото")
     exclude = {l.strip().lower().lstrip("@") for l in b.exclude.splitlines() if l.strip()}
     chats = await con.fetch(
-        "select c.account_id, c.chat_id, c.title, c.username from chats c "
-        "left join flags f on f.chat_id=c.chat_id "
+        "select c.account_id, c.chat_id, c.title, c.username, "
+        "exists(select 1 from messages m where m.account_id=c.account_id and m.chat_id=c.chat_id) as hist "
+        "from chats c left join flags f on f.chat_id=c.chat_id "
         "where c.account_id=any($1) and c.kind=any($2) and not coalesce(f.skip,false) "
         "order by c.account_id, c.chat_id", b.account_ids, b.kinds)
-    seen, targets = set(), []
-    for c in chats:
-        if c["chat_id"] in seen or str(c["chat_id"]) in exclude or c["username"].lower() in exclude:
-            continue
-        seen.add(c["chat_id"])
-        targets.append((c["account_id"], c["chat_id"], c["title"]))
+    rows = [c for c in chats if str(c["chat_id"]) not in exclude and c["username"].lower() not in exclude]
+    targets, dupes = assign_targets(rows, b.dedupe)
     if b.max_contacts > 0:
         targets = targets[:b.max_contacts]
     if not targets:
@@ -614,11 +642,16 @@ async def create_campaign(b: CampaignIn, con=Depends(get_db)):
         "values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $14::boolean then now() end) returning id",
         b.name, b.text, b.media_id, b.account_ids, b.kinds, b.max_contacts, max(1, -(-b.per_hour // 60)), b.per_day,
         b.window_start, b.window_end, b.tz, "scheduled" if start_utc else "draft", start_utc, tested)
-    await con.execute("update campaigns set per_hour=$2 where id=$1", cid, b.per_hour)
+    await con.execute("update campaigns set per_hour=$2, dedupe=$3, dupes=$4 where id=$1",
+                      cid, b.per_hour, b.dedupe, dupes)
     await con.executemany(
         "insert into targets(campaign_id, account_id, chat_id, title) values($1,$2,$3,$4)",
         [(cid, a, ch, t) for a, ch, t in targets])
-    return {"id": cid, "targets": len(targets)}
+    per_account: dict[str, int] = {}
+    names = {r["id"]: r["name"] for r in await con.fetch("select id, name from accounts where id=any($1)", b.account_ids)}
+    for a, _, _ in targets:
+        per_account[names.get(a, str(a))] = per_account.get(names.get(a, str(a)), 0) + 1
+    return {"id": cid, "targets": len(targets), "dupes": dupes, "per_account": per_account}
 
 
 class StatusIn(BaseModel):
@@ -1092,8 +1125,11 @@ async def send_batch(con, client, aid, c, n, deadline, now):
             break
         t = await con.fetchrow(
             "update targets set status='sending' where id=(select id from targets "
-            "where campaign_id=$1 and account_id=$2 and status='pending' order by id "
-            "limit 1 for update skip locked) returning id, chat_id, title", c["id"], aid)
+            "where campaign_id=$1 and account_id=$2 and status='pending' "
+            "and (not $3::boolean or not exists (select 1 from targets x where x.campaign_id=targets.campaign_id "
+            "and x.chat_id=targets.chat_id and x.id<>targets.id and x.status in ('sending','sent'))) "
+            "order by id limit 1 for update skip locked) returning id, chat_id, title",
+            c["id"], aid, bool(c["dedupe"]) if c["dedupe"] is not None else True)
         if not t:
             break
         status, err, stop, msg_id = "sent", None, False, None
@@ -1436,7 +1472,7 @@ async function campaignsView(){
  $('#view').innerHTML=`<div class="grid"><div>
  <div class="card"><h2>Рассылки</h2>${camps.map(c=>`<div class="item"><div style="display:flex;gap:12px;align-items:center;min-width:0">
   ${c.media_id?`<img class="thumb" src="/api/media/${c.media_id}">`:''}<div style="min-width:0"><b>${esc(c.name)}</b> ${pill(c.status)}
-  <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''} · ${c.per_hour||c.per_minute*60}/час · ${c.window_start}–${c.window_end} ч</div>
+  <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''}${c.dupes?' · дублей убрано '+c.dupes:''} · ${c.per_hour||c.per_minute*60}/час · ${c.window_start}–${c.window_end} ч</div>
   ${c.status==='scheduled'&&c.start_at?`<div class="mut" style="color:var(--purple)">Старт: ${new Date(c.start_at).toLocaleString('ru',{timeZone:c.tz,dateStyle:'short',timeStyle:'short'})} (${esc(c.tz)})</div>`:''}
   ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}</div></div>
   <div class="btns"><button class="btn sec sm" onclick="prevC(${c.id})">Предпросмотр</button><button class="btn sec sm" onclick="testC(${c.id},this)">Тест</button>
@@ -1449,6 +1485,7 @@ async function campaignsView(){
  <label>Текст ({name} — первое слово названия чата)</label><textarea id="ct" rows="5"></textarea>
  <label>Фото (необязательно, JPEG/PNG/WebP до 4 МБ)</label><input id="cf" type="file" accept="image/jpeg,image/png,image/webp">
  <label>Аккаунты</label><div class="row tight">${act.map(a=>`<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" class="ca" value="${a.id}" checked> ${esc(a.name)}</label>`).join('')||'<span class="mut">Нет активных аккаунтов — добавьте на вкладке «Аккаунты»</span>'}</div>
+ <label class="chk" style="margin-top:10px" title="Если человек есть сразу у нескольких выбранных аккаунтов, сообщение уйдёт только с одного"><input type="checkbox" id="dd" checked> Дубликатор: одному человеку одно сообщение, даже если он есть у нескольких аккаунтов</label>
  <label>Типы чатов</label><div class="row tight">${['user','group','supergroup','channel'].map(k=>`<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" class="ck" value="${k}" ${k!=='channel'?'checked':''}> ${kindName[k]}</label>`).join('')}</div>
  <div class="row"><div><label>Сообщений в час (на аккаунт; безопаснее 30–60)</label><input id="pm" type="number" value="60" min="1" max="1200"></div>
  <div><label>Макс. в день на аккаунт (0 — без лимита)</label><input id="pd" type="number" value="0" min="0"></div>
@@ -1467,13 +1504,13 @@ async function campaignsView(){
   const fd=new FormData();fd.append('file',f);const id=(await api('POST','/api/media',fd,true)).id;up={sig,id};return id};
  const accIds=()=>$$('.ca:checked').map(x=>+x.value);
  const body=async extra=>({name:$('#cn').value||'Без названия',text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds(),kinds:$$('.ck:checked').map(x=>x.value),
-  per_hour:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value,...extra});
+  per_hour:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value,dedupe:$('#dd').checked,...extra});
  $('#ct2').onclick=async()=>{const b=$('#ct2');b.disabled=true;b.textContent='Отправка…';try{
   const r=await api('POST','/api/test-send',{text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds()});showTest(r)}catch{}finally{b.disabled=false;b.textContent='Тест'}};
  $('#cc').onclick=async()=>{const b=$('#cc');b.disabled=true;try{const r=await api('POST','/api/campaigns',await body());
-  note('Создано, контактов: '+r.targets+'. Отправьте тест и запустите.');campaignsView()}catch{}finally{b.disabled=false}};
+  note(dupeNote('Создано',r)+' Отправьте тест и запустите.');campaignsView()}catch{}finally{b.disabled=false}};
  $('#cs').onclick=()=>pickTime($('#tz').value,async when=>{const r=await api('POST','/api/campaigns',await body({start_at:when}));
-  note('Запланировано, контактов: '+r.targets);campaignsView()})}
+  note(dupeNote('Запланировано',r));campaignsView()})}
 function pickTime(tz,cb){const pad=n=>String(n).padStart(2,'0');const d=new Date(Date.now()+3600e3);
  const def=`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:00`;
  const m=modal(`<h2>Запланировать рассылку</h2><label style="margin-top:0">Дата и время запуска</label><input type="datetime-local" id="sd" value="${def}">
@@ -1483,6 +1520,8 @@ function pickTime(tz,cb){const pad=n=>String(n).padStart(2,'0');const d=new Date
 function schedC(id,tz){pickTime(tz,async when=>{await api('POST',`/api/campaigns/${id}/schedule`,{start_at:when});note('Запуск запланирован');campaignsView()})}
 function showTest(r){modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>':`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
  <div class="btns" style="margin-top:14px"><button class="btn" onclick="this.closest('.modal').remove()">Готово</button></div>`)}
+function dupeNote(w,r){const pa=Object.entries(r.per_account||{});
+ return `${w}: контактов ${r.targets}${r.dupes?`, убрано дублей ${r.dupes}`:''}${pa.length>1?` (${pa.map(([k,v])=>k+' — '+v).join(', ')})`:''}.`}
 async function prevC(id){const c=(await api('GET','/api/campaigns')).find(x=>x.id===id);
  modal(phone(c.text,c.media_id?'/api/media/'+c.media_id:null,'ServiceGuru','Анна')+'<div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest(\'.modal\').remove()">Закрыть</button></div>');fitPhones()}
 async function testC(id,b){b.disabled=true;b.textContent='Отправка…';try{showTest(await api('POST',`/api/campaigns/${id}/test`))}catch{}finally{campaignsView()}}
