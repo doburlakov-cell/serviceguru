@@ -66,6 +66,8 @@ create table if not exists campaigns(
 alter table campaigns add column if not exists media_id int;
 alter table campaigns add column if not exists tested_at timestamptz;
 alter table campaigns add column if not exists start_at timestamptz;
+alter table campaigns add column if not exists per_hour int;
+update campaigns set per_hour = per_minute * 60 where per_hour is null;
 alter table media add column if not exists created_at timestamptz default now();
 create table if not exists tested(key text primary key, at timestamptz default now());
 create table if not exists targets(
@@ -93,7 +95,7 @@ create table if not exists conversations(
   unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
   primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 3   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 4   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -534,7 +536,7 @@ class CampaignIn(BaseModel):
     account_ids: list[int]
     kinds: list[str] = ["user", "group", "supergroup"]
     max_contacts: int = 0       # 0 = без ограничения
-    per_minute: int = 10
+    per_hour: int = 60          # сообщений в час на аккаунт
     per_day: int = 0            # 0 = без ограничения, на аккаунт
     window_start: int = 0
     window_end: int = 24
@@ -577,8 +579,8 @@ async def list_campaigns(con=Depends(get_db)):
 async def create_campaign(b: CampaignIn, con=Depends(get_db)):
     if not b.account_ids or not (b.text.strip() or b.media_id):
         raise HTTPException(400, "Нужны текст или фото и хотя бы один аккаунт")
-    if not 1 <= b.per_minute <= 20:
-        raise HTTPException(400, "Сообщений в минуту: от 1 до 20")
+    if not 1 <= b.per_hour <= 1200:
+        raise HTTPException(400, "Сообщений в час: от 1 до 1200")
     try:
         ZoneInfo(b.tz)
     except Exception:  # noqa: BLE001
@@ -610,8 +612,9 @@ async def create_campaign(b: CampaignIn, con=Depends(get_db)):
         "insert into campaigns(name, text, media_id, account_ids, kinds, max_contacts, per_minute, per_day, "
         "window_start, window_end, tz, status, start_at, tested_at) "
         "values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $14::boolean then now() end) returning id",
-        b.name, b.text, b.media_id, b.account_ids, b.kinds, b.max_contacts, b.per_minute, b.per_day,
+        b.name, b.text, b.media_id, b.account_ids, b.kinds, b.max_contacts, max(1, -(-b.per_hour // 60)), b.per_day,
         b.window_start, b.window_end, b.tz, "scheduled" if start_utc else "draft", start_utc, tested)
+    await con.execute("update campaigns set per_hour=$2 where id=$1", cid, b.per_hour)
     await con.executemany(
         "insert into targets(campaign_id, account_id, chat_id, title) values($1,$2,$3,$4)",
         [(cid, a, ch, t) for a, ch, t in targets])
@@ -1065,11 +1068,24 @@ def in_window(c, now_utc) -> bool:
     return s <= h < e if s < e else (h >= s or h < e)
 
 
+PACE_MINUTES = 10   # скользящее окно равномерной подачи
+
+
+def pace_allow(per_hour: int) -> int:
+    """Сколько сообщений можно отправить за любые PACE_MINUTES минут (за час выйдет ровно per_hour)."""
+    return max(1, per_hour * PACE_MINUTES // 60)
+
+
+def pace_cap(per_hour: int) -> int:
+    """Не больше стольких сообщений за один тик (раз в минуту)."""
+    return max(1, -(-per_hour // 60))
+
+
 async def send_batch(con, client, aid, c, n, deadline, now):
     """Отправляет до n сообщений рассылки с аккаунта. Возвращает (отправлено, остановить аккаунт)."""
     media = await con.fetchrow("select filename, data from media where id=$1", c["media_id"]) \
         if c["media_id"] else None
-    gap = min(60 / c["per_minute"], 36 / max(n, 1))
+    gap = min(20.0, 36 / max(n, 1))
     sent = 0
     for i in range(n):
         if time.monotonic() > deadline:
@@ -1184,9 +1200,20 @@ async def run_account(aid, camps, send_deadline, deadline):
                 await con.execute("update accounts set status='error' where id=$1", aid)
                 return
             if not blocked:
-                left = max([c["per_minute"] for c in camps], default=0)
+                left = 0
+                if camps:
+                    top = max(c["per_hour"] for c in camps)
+                    recent = await con.fetchval(
+                        "select count(*) from targets where account_id=$1 and status='sent' "
+                        "and sent_at > now() - make_interval(mins => $2)", aid, PACE_MINUTES)
+                    left = min(pace_cap(top), pace_allow(top) - recent)
                 for c in camps:
-                    n = min(c["per_minute"], left)
+                    if left <= 0:
+                        break
+                    recent_c = await con.fetchval(
+                        "select count(*) from targets where campaign_id=$1 and account_id=$2 and status='sent' "
+                        "and sent_at > now() - make_interval(mins => $3)", c["id"], aid, PACE_MINUTES)
+                    n = min(pace_cap(c["per_hour"]), pace_allow(c["per_hour"]) - recent_c, left)
                     if c["per_day"] > 0:
                         day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
                         sent_today = await con.fetchval(
@@ -1409,7 +1436,7 @@ async function campaignsView(){
  $('#view').innerHTML=`<div class="grid"><div>
  <div class="card"><h2>Рассылки</h2>${camps.map(c=>`<div class="item"><div style="display:flex;gap:12px;align-items:center;min-width:0">
   ${c.media_id?`<img class="thumb" src="/api/media/${c.media_id}">`:''}<div style="min-width:0"><b>${esc(c.name)}</b> ${pill(c.status)}
-  <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''} · ${c.per_minute}/мин · ${c.window_start}–${c.window_end} ч</div>
+  <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''} · ${c.per_hour||c.per_minute*60}/час · ${c.window_start}–${c.window_end} ч</div>
   ${c.status==='scheduled'&&c.start_at?`<div class="mut" style="color:var(--purple)">Старт: ${new Date(c.start_at).toLocaleString('ru',{timeZone:c.tz,dateStyle:'short',timeStyle:'short'})} (${esc(c.tz)})</div>`:''}
   ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}</div></div>
   <div class="btns"><button class="btn sec sm" onclick="prevC(${c.id})">Предпросмотр</button><button class="btn sec sm" onclick="testC(${c.id},this)">Тест</button>
@@ -1423,7 +1450,7 @@ async function campaignsView(){
  <label>Фото (необязательно, JPEG/PNG/WebP до 4 МБ)</label><input id="cf" type="file" accept="image/jpeg,image/png,image/webp">
  <label>Аккаунты</label><div class="row tight">${act.map(a=>`<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" class="ca" value="${a.id}" checked> ${esc(a.name)}</label>`).join('')||'<span class="mut">Нет активных аккаунтов — добавьте на вкладке «Аккаунты»</span>'}</div>
  <label>Типы чатов</label><div class="row tight">${['user','group','supergroup','channel'].map(k=>`<label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" class="ck" value="${k}" ${k!=='channel'?'checked':''}> ${kindName[k]}</label>`).join('')}</div>
- <div class="row"><div><label>Сообщений в минуту (на аккаунт)</label><input id="pm" type="number" value="10" min="1" max="20"></div>
+ <div class="row"><div><label>Сообщений в час (на аккаунт; безопаснее 30–60)</label><input id="pm" type="number" value="60" min="1" max="1200"></div>
  <div><label>Макс. в день на аккаунт (0 — без лимита)</label><input id="pd" type="number" value="0" min="0"></div>
  <div><label>Макс. контактов всего (0 — все)</label><input id="mc" type="number" value="0" min="0"></div></div>
  <div class="row"><div><label>Отправлять с (час)</label><input id="ws" type="number" value="9" min="0" max="23"></div><div><label>до (час)</label><input id="we" type="number" value="20" min="1" max="24"></div>
@@ -1440,7 +1467,7 @@ async function campaignsView(){
   const fd=new FormData();fd.append('file',f);const id=(await api('POST','/api/media',fd,true)).id;up={sig,id};return id};
  const accIds=()=>$$('.ca:checked').map(x=>+x.value);
  const body=async extra=>({name:$('#cn').value||'Без названия',text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds(),kinds:$$('.ck:checked').map(x=>x.value),
-  per_minute:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value,...extra});
+  per_hour:+$('#pm').value,per_day:+$('#pd').value,max_contacts:+$('#mc').value,window_start:+$('#ws').value,window_end:+$('#we').value,tz:$('#tz').value,exclude:$('#ex').value,...extra});
  $('#ct2').onclick=async()=>{const b=$('#ct2');b.disabled=true;b.textContent='Отправка…';try{
   const r=await api('POST','/api/test-send',{text:$('#ct').value,media_id:await ensureMedia(),account_ids:accIds()});showTest(r)}catch{}finally{b.disabled=false;b.textContent='Тест'}};
  $('#cc').onclick=async()=>{const b=$('#cc');b.disabled=true;try{const r=await api('POST','/api/campaigns',await body());
