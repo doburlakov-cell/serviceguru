@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% block title %}Сотрудники — ServiceGuru{% endblock %}
+{% block body %}
+<h1>Сотрудники</h1><p class="sub">Один аккаунт — доступ ко всем выбранным проектам.</p>
+<div class="card">
+  <table>
+    <tr><th>Логин</th><th>Имя</th><th>Роль</th><th>Статус</th><th></th></tr>
+    {% for r in rows %}
+    <tr><td>{{ r.login }}</td><td>{{ r.name }}</td><td>{% if r.is_admin %}<span class="tag">админ</span>{% endif %}</td>
+      <td>{% if r.active %}активен{% else %}<span class="tag">отключён</span>{% endif %}</td>
+      <td><a href="/admin/users/{{ r.id }}">Изменить</a></td></tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card">
+  <b>Новый сотрудник</b>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row"><div><label>Логин</label><input type="text" name="login" required></div>
+    <div><label>Имя</label><input type="text" name="name"></div></div>
+    <label>Временный пароль (от 8 символов)</label><input type="text" name="password" required>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <button>Создать</button>
+  </form>
+</div>
+{% endblock %}

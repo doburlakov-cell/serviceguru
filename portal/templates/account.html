@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block title %}Аккаунт — ServiceGuru{% endblock %}
+{% block body %}
+<h1>Мой аккаунт</h1><p class="sub">Логин: <code>{{ me.login }}</code></p>
+<div class="card" style="max-width:420px">
+  <form method="post" action="/account">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Текущий пароль</label><input type="password" name="old" autocomplete="current-password" required>
+    <label>Новый пароль (от 8 символов)</label><input type="password" name="new" autocomplete="new-password" required>
+    <label>Повторите новый пароль</label><input type="password" name="new2" autocomplete="new-password" required>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}{% if msg %}<div class="ok">{{ msg }}</div>{% endif %}
+    <button>Сменить пароль</button>
+  </form>
+</div>
+{% endblock %}

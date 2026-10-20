@@ -3,3 +3,5 @@ broadcast/sessions/
 broadcast/sent.jsonl
 broadcast/chats.csv
 *.session
+__pycache__/
+portal/portal.db
