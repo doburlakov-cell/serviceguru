@@ -91,6 +91,7 @@ alter table accounts add column if not exists reads_checked_at timestamptz;
 create index if not exists targets_chat_idx on targets(chat_id);
 alter table targets add column if not exists replied_at timestamptz;
 alter table targets add column if not exists reply_checked_id bigint;
+create table if not exists locks(k text primary key, until timestamptz);
 create table if not exists account_events(
   id serial primary key, account_id int, kind text, seconds int, at timestamptz default now());
 alter table accounts add column if not exists inbox_checked_at timestamptz;
@@ -105,7 +106,7 @@ create table if not exists conversations(
   unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
   primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 6   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 7   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -146,21 +147,22 @@ def auth(request: Request):
     raise HTTPException(401, "Нужен вход")
 
 
+SCHEMA_LOCK = 5150001   # блокировка внутри транзакции: сеансовые блокировки «залипают» за пулом Neon (pgbouncer)
+
+
 async def ensure_schema(con):
     """Обновляет структуру базы один раз на версию схемы. Блокировка нужна, потому что при холодном
     старте несколько запросов приходят одновременно, а параллельные ALTER TABLE приводят к deadlock."""
     global _schema_ready
     if _schema_ready:
         return
-    await con.fetchval("select pg_advisory_lock(424242)")
-    try:
+    async with con.transaction():
+        await con.fetchval("select pg_advisory_xact_lock($1)", SCHEMA_LOCK)
         await con.execute("create table if not exists meta(k text primary key, v int)")
         if await con.fetchval("select v from meta where k='schema'") != SCHEMA_VERSION:
             await con.execute(SCHEMA)
             await con.execute("insert into meta(k, v) values('schema', $1) "
                               "on conflict(k) do update set v=excluded.v", SCHEMA_VERSION)
-    finally:
-        await con.fetchval("select pg_advisory_unlock(424242)")
     _schema_ready = True
 
 
@@ -271,12 +273,24 @@ async def deliver(client, peer, text, media):
     return last.id
 
 
-LOCK_BASE = 7_000_000
+async def acquire(con, key, ttl=80):
+    """Аренда с истечением срока: работает за пулом соединений и сама освобождается, если процесс оборвался."""
+    return bool(await con.fetchval(
+        "insert into locks(k, until) values($1, now() + make_interval(secs => $2)) "
+        "on conflict(k) do update set until=excluded.until where locks.until < now() returning 1", key, ttl))
 
 
-async def lock_account(con, aid):
-    """Одну сессию Telegram нельзя использовать из двух мест сразу: блокировка на время запроса."""
-    if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+async def release(con, key):
+    await con.execute("delete from locks where k=$1", key)
+
+
+def acct_key(aid) -> str:
+    return f"acct:{aid}"
+
+
+async def lock_account(con, aid, ttl=80):
+    """Одну сессию Telegram нельзя использовать из двух мест сразу."""
+    if not await acquire(con, acct_key(aid), ttl):
         raise HTTPException(409, "Аккаунт сейчас занят отправкой, повторите через минуту")
 
 
@@ -368,27 +382,30 @@ async def sync_chats(aid: int, con=Depends(get_db)):
     if not acc:
         raise HTTPException(404, "Аккаунт не найден или не авторизован")
     await lock_account(con, aid)
-    rows, ro, deadline = [], {}, time.monotonic() + TICK_BUDGET
-    async with client_for(acc) as client:
-        async for d in client.iter_dialogs():
-            e = d.entity
-            k = kind_of(e)
-            if k != "other" and can_write(e):
-                ptype = "user" if isinstance(e, User) else "channel" if isinstance(e, Channel) else "chat"
-                rows.append((aid, d.id, k, d.name or "", getattr(e, "username", None) or "",
-                             e.id, ptype, getattr(e, "access_hash", None) or 0))
-            if isinstance(e, User):
-                ro[d.id] = d.dialog.read_outbox_max_id
-            if time.monotonic() > deadline:
-                break
-    await con.executemany(
-        "insert into chats(account_id, chat_id, kind, title, username, raw_id, ptype, access_hash) "
-        "values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(account_id, chat_id) do update set "
-        "kind=excluded.kind, title=excluded.title, username=excluded.username, raw_id=excluded.raw_id, "
-        "ptype=excluded.ptype, access_hash=excluded.access_hash", rows)
-    marked = await mark_reads(con, aid, ro)
-    await con.execute("update accounts set reads_checked_at=now() where id=$1", aid)
-    return {"synced": len(rows), "reads": marked}
+    try:
+        rows, ro, deadline = [], {}, time.monotonic() + TICK_BUDGET
+        async with client_for(acc) as client:
+            async for d in client.iter_dialogs():
+                e = d.entity
+                k = kind_of(e)
+                if k != "other" and can_write(e):
+                    ptype = "user" if isinstance(e, User) else "channel" if isinstance(e, Channel) else "chat"
+                    rows.append((aid, d.id, k, d.name or "", getattr(e, "username", None) or "",
+                                 e.id, ptype, getattr(e, "access_hash", None) or 0))
+                if isinstance(e, User):
+                    ro[d.id] = d.dialog.read_outbox_max_id
+                if time.monotonic() > deadline:
+                    break
+        await con.executemany(
+            "insert into chats(account_id, chat_id, kind, title, username, raw_id, ptype, access_hash) "
+            "values($1,$2,$3,$4,$5,$6,$7,$8) on conflict(account_id, chat_id) do update set "
+            "kind=excluded.kind, title=excluded.title, username=excluded.username, raw_id=excluded.raw_id, "
+            "ptype=excluded.ptype, access_hash=excluded.access_hash", rows)
+        marked = await mark_reads(con, aid, ro)
+        await con.execute("update accounts set reads_checked_at=now() where id=$1", aid)
+        return {"synced": len(rows), "reads": marked}
+    finally:
+        await release(con, acct_key(aid))
 
 
 @app.delete("/api/accounts/{aid}", dependencies=[Depends(auth)])
@@ -715,25 +732,28 @@ async def send_test(con, account_ids, text, media_id):
     if not acc:
         raise HTTPException(400, "Нет доступного аккаунта для отправки теста")
     await lock_account(con, acc["id"])
-    media = await con.fetchrow("select filename, data from media where id=$1", media_id) if media_id else None
-    results = []
-    async with client_for(acc) as client:
-        for r in recipients:
-            target = r["target"].strip()
-            try:
-                if target.lstrip("-").isdigit():
-                    row = await con.fetchrow(
-                        "select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2",
-                        acc["id"], int(target))
-                    peer = peer_of(row) if row else int(target)
-                else:
-                    peer = target
-                await deliver(client, peer, text.replace("{name}", first_word(r["label"])), media)
-                results.append({"label": r["label"], "ok": True})
-            except Exception as e:  # noqa: BLE001
-                results.append({"label": r["label"], "ok": False, "error": type(e).__name__ + ": " + str(e)[:120]})
-            await asyncio.sleep(2)
-    return {"account": acc["name"], "results": results}
+    try:
+        media = await con.fetchrow("select filename, data from media where id=$1", media_id) if media_id else None
+        results = []
+        async with client_for(acc) as client:
+            for r in recipients:
+                target = r["target"].strip()
+                try:
+                    if target.lstrip("-").isdigit():
+                        row = await con.fetchrow(
+                            "select ptype, raw_id, access_hash from chats where account_id=$1 and chat_id=$2",
+                            acc["id"], int(target))
+                        peer = peer_of(row) if row else int(target)
+                    else:
+                        peer = target
+                    await deliver(client, peer, text.replace("{name}", first_word(r["label"])), media)
+                    results.append({"label": r["label"], "ok": True})
+                except Exception as e:  # noqa: BLE001
+                    results.append({"label": r["label"], "ok": False, "error": type(e).__name__ + ": " + str(e)[:120]})
+                await asyncio.sleep(2)
+        return {"account": acc["name"], "results": results}
+    finally:
+        await release(con, acct_key(acc["id"]))
 
 
 class TestSendIn(BaseModel):
@@ -971,16 +991,19 @@ async def chat_sync(aid: int, cid: int, con=Depends(get_db)):
     await con.execute(
         "insert into conversations(account_id, chat_id, unread, seen_at) values($1,$2,0,now()) "
         "on conflict(account_id, chat_id) do update set unread=0, seen_at=now()", aid, cid)
-    if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+    if not await acquire(con, acct_key(aid), 60):
         return {"busy": True}       # аккаунт занят отправкой: покажем то, что есть в базе
-    async with client_for(acc) as client:
-        peer = peer_of(row)
-        n = await store_messages(con, aid, cid, await client.get_messages(peer, limit=40))
-        try:
-            await client.send_read_acknowledge(peer)
-        except Exception:  # noqa: BLE001
-            pass
-    return {"synced": n}
+    try:
+        async with client_for(acc) as client:
+            peer = peer_of(row)
+            n = await store_messages(con, aid, cid, await client.get_messages(peer, limit=40))
+            try:
+                await client.send_read_acknowledge(peer)
+            except Exception:  # noqa: BLE001
+                pass
+        return {"synced": n}
+    finally:
+        await release(con, acct_key(aid))
 
 
 @app.post("/api/chats/{aid}/{cid}/send", dependencies=[Depends(auth)])
@@ -998,7 +1021,7 @@ async def chat_send(aid: int, cid: int, b: ChatSendIn, con=Depends(get_db)):
         "values($1,$2,true,$3,$4,'queued',$5) returning id", aid, cid, b.text.strip(),
         "photo" if b.media_id else "text", b.media_id)
     queued = True
-    if await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+    if await acquire(con, acct_key(aid), 60):
         media = await con.fetchrow("select filename, data from media where id=$1", b.media_id) if b.media_id else None
         try:
             async with client_for(acc) as client:
@@ -1008,6 +1031,8 @@ async def chat_send(aid: int, cid: int, b: ChatSendIn, con=Depends(get_db)):
         except Exception as e:  # noqa: BLE001
             await con.execute("update messages set status='failed', error=$2 where id=$1", mid, type(e).__name__)
             raise HTTPException(400, f"Не удалось отправить: {type(e).__name__}")
+        finally:
+            await release(con, acct_key(aid))
     # ответ дан: диалог уходит из «Требуют ответа»
     await con.execute(
         "update conversations set needs_reply='done', triage_at=now() where account_id=$1 and chat_id=$2 "
@@ -1300,8 +1325,10 @@ async def run_account(aid, camps, send_deadline, deadline):
     """Одно задание на аккаунт: рассылки по очереди (общий лимит в минуту), ответы из платформы,
     новые входящие и проверка прочтения."""
     con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
+    got = False
     try:
-        if not await con.fetchval("select pg_try_advisory_lock($1)", LOCK_BASE + aid):
+        got = await acquire(con, acct_key(aid), 80)
+        if not got:
             return
         acc = await con.fetchrow("select * from accounts where id=$1", aid)
         now = datetime.now(timezone.utc)
@@ -1349,6 +1376,8 @@ async def run_account(aid, camps, send_deadline, deadline):
         finally:
             await client.disconnect()
     finally:
+        if got:
+            await release(con, acct_key(aid))
         await con.close()
 
 
@@ -1649,7 +1678,9 @@ const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function note(t,bad){const m=$('#msg');m.textContent=t;m.className=bad?'bad':'';m.style.display='block';clearTimeout(note.t);note.t=setTimeout(()=>m.style.display='none',bad?15000:6000)}
 async function api(m,u,b,form){const o={method:m,headers:{}};if(form)o.body=b;else if(b!==undefined){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}
- const r=await fetch(u,o);if(r.status==401&&u!=='/api/login'){const j=await r.json().catch(()=>({}));if(j.login_url){location.href=j.login_url;throw 0}login();throw 0}
+ const ctl=new AbortController(),tmr=setTimeout(()=>ctl.abort(),30000);o.signal=ctl.signal;let r;
+ try{r=await fetch(u,o)}catch(e){clearTimeout(tmr);note(e.name==='AbortError'?'Сервер долго не отвечает. Попробуйте ещё раз.':'Нет связи с сервером',1);throw {detail:'network'}}clearTimeout(tmr);
+ if(r.status==401&&u!=='/api/login'){const j=await r.json().catch(()=>({}));if(j.login_url){location.href=j.login_url;throw 0}login();throw 0}
  const d=await r.json().catch(()=>({}));
  if(!r.ok){const det=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;note(det||('Ошибка '+r.status),1);throw d}return d}
 function modal(html){const m=document.createElement('div');m.className='modal';m.innerHTML='<div>'+html+'</div>';
@@ -1712,7 +1743,7 @@ async function show(t){clearTimers();tab=t;try{localStorage.setItem('tab',t)}cat
  const meta=TABS.find(x=>x[0]===t)||TABS[0];$('#pt').textContent=meta[1];$('#ps').textContent=meta[3];
  $$('.side nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));$('#side').classList.remove('open');$('#scrim').classList.remove('on');
  const v=$('#view');v.classList.remove('in');v.innerHTML='<div class="skel"></div><div class="skel" style="height:170px"></div><div class="skel"></div>';
- try{await VIEWS[t]()}catch(e){if(e!==0&&e!==undefined&&!e.detail)v.innerHTML='<div class="card"><p class="mut" style="margin:0">Не удалось загрузить. Обновите страницу.</p></div>'}
+ try{await VIEWS[t]()}catch(e){if(e!==0)v.innerHTML='<div class="card"><h2>Не удалось загрузить</h2><p class="mut">Сервер не ответил или вернул ошибку. Данные не потеряны.</p><button class="btn" onclick="show(tab)">Повторить</button></div>'}
  v.classList.remove('in');void v.offsetWidth;v.classList.add('in');countUps()}
 async function refreshBadges(){try{const s=await api('GET','/api/inbox/summary');
  const set=(t,n)=>{const c=document.querySelector(`.side nav button[data-t=${t}] .cnt`);if(c){c.textContent=n||'';c.hidden=!n}};
