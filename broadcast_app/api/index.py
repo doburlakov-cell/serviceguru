@@ -23,6 +23,15 @@ from telethon.tl.types import Channel, Chat, User
 
 app = FastAPI()
 
+
+@app.middleware("http")
+async def strip_entry_prefix(request: Request, call_next):
+    """Vercel может отдавать приложению путь вместе с адресом точки входа (/api/index)."""
+    path = request.scope["path"]
+    if path == "/api/index" or path.startswith("/api/index/"):
+        request.scope["path"] = path[len("/api/index"):] or "/"
+    return await call_next(request)
+
 TICK_BUDGET = 48          # секунд на один тик (лимит функции 60)
 COOKIE = "bc_auth"
 COOKIE_TTL = 7 * 24 * 3600
