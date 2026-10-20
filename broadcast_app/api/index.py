@@ -9,6 +9,7 @@ import hmac
 import io
 import os
 import random
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,7 +23,12 @@ from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel, Chat, InputPeerChannel, InputPeerChat, InputPeerUser, User
 
+sys.path.insert(0, os.path.dirname(__file__))
+from _sso_client import enabled as sso_enabled, install_sso  # единый вход через портал, если заданы PORTAL_URL и SSO_APP_ID
+
 app = FastAPI()
+# добавляем до strip_entry_prefix: тот выполняется раньше и приводит путь к обычному виду
+install_sso(app, public_paths=("/api/health", "/api/tick"))   # /api/tick защищён CRON_SECRET
 
 
 @app.middleware("http")
@@ -128,6 +134,8 @@ def sign(exp: int) -> str:
 
 
 def auth(request: Request):
+    if sso_enabled():
+        return   # вход уже проверен в install_sso
     tok = request.cookies.get(COOKIE, "")
     try:
         exp, sig = tok.split(".")
@@ -1641,7 +1649,7 @@ const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function note(t,bad){const m=$('#msg');m.textContent=t;m.className=bad?'bad':'';m.style.display='block';clearTimeout(note.t);note.t=setTimeout(()=>m.style.display='none',bad?15000:6000)}
 async function api(m,u,b,form){const o={method:m,headers:{}};if(form)o.body=b;else if(b!==undefined){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}
- const r=await fetch(u,o);if(r.status==401&&u!=='/api/login'){login();throw 0}
+ const r=await fetch(u,o);if(r.status==401&&u!=='/api/login'){const j=await r.json().catch(()=>({}));if(j.login_url){location.href=j.login_url;throw 0}login();throw 0}
  const d=await r.json().catch(()=>({}));
  if(!r.ok){const det=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;note(det||('Ошибка '+r.status),1);throw d}return d}
 function modal(html){const m=document.createElement('div');m.className='modal';m.innerHTML='<div>'+html+'</div>';
@@ -1696,7 +1704,7 @@ function shell(){$('#root').innerHTML=`<div class="app"><aside class="side" id="
  <div class="page"><div id="view"></div></div></div></div>`;
  applyTheme(document.documentElement.dataset.theme);
  $$('.side nav button').forEach(b=>b.onclick=()=>show(b.dataset.t));
- $('#out').onclick=async()=>{await api('POST','/api/logout');login()};$('#thm').onclick=toggleTheme;$('#kbd').onclick=openPalette;$('#srch').onclick=openPalette;$('#newc').onclick=gotoNew;
+ $('#out').onclick=async()=>{if(window.SSO){location.href='/sso/logout';return}await api('POST','/api/logout');login()};$('#thm').onclick=toggleTheme;$('#kbd').onclick=openPalette;$('#srch').onclick=openPalette;$('#newc').onclick=gotoNew;
  const side=$('#side'),sc=$('#scrim');$('#mn').onclick=()=>{side.classList.add('open');sc.classList.add('on')};sc.onclick=()=>{side.classList.remove('open');sc.classList.remove('on')}}
 async function gotoNew(){await show('campaigns');setTimeout(()=>{const x=$('#cn');if(x){x.scrollIntoView({behavior:'smooth',block:'center'});x.focus()}},160)}
 function countUps(){$$('[data-n]').forEach(el=>{const n=+el.dataset.n;if(!isFinite(n)||n<2){el.textContent=el.dataset.n;return}let s0=null;const step=t=>{s0=s0||t;const p=Math.min(1,(t-s0)/800);el.textContent=Math.round(n*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(step)};requestAnimationFrame(step)})}
@@ -2068,4 +2076,4 @@ api('GET','/api/me').then(start).catch(e=>{if(e!==0)login()});
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return PAGE
+    return PAGE.replace("<head>", "<head><script>window.SSO=true</script>", 1) if sso_enabled() else PAGE

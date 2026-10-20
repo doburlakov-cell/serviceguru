@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}{{ t.login }} — ServiceGuru{% endblock %}
+{% block body %}
+<h1>{{ t.login }}</h1><p class="sub"><a href="/admin/users">← к списку</a></p>
+<div class="card">
+  <form method="post" action="/admin/users/{{ t.id }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Имя</label><input type="text" name="name" value="{{ t.name }}">
+    <label>Новый пароль (оставьте пустым, чтобы не менять)</label><input type="text" name="password" autocomplete="off">
+    {% set self = t.id == me.id %}
+    <div class="chk"><input type="checkbox" name="active" id="a" {% if t.active %}checked{% endif %} {% if self %}disabled{% endif %}><label for="a" style="margin:0">Активен (отключение закрывает вход во все проекты)</label></div>
+    <div class="chk"><input type="checkbox" name="is_admin" id="b" {% if t.is_admin %}checked{% endif %} {% if self %}disabled{% endif %}><label for="b" style="margin:0">Администратор (видит все проекты, управляет сотрудниками)</label></div>
+    <label>Доступ к проектам</label>
+    {% for a in all_apps %}
+    <div class="chk"><input type="checkbox" name="apps" value="{{ a.id }}" id="p{{ a.id }}" {% if a.id in have %}checked{% endif %}><label for="p{{ a.id }}" style="margin:0">{{ a.name }}</label></div>
+    {% else %}<p class="sub">Проекты ещё не добавлены — см. «Подключения».</p>{% endfor %}
+    <button>Сохранить</button>
+  </form>
+</div>
+{% endblock %}

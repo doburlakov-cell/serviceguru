@@ -11,7 +11,10 @@ import re
 import io
 import os
 
+from sso_client import install_sso
+
 app = FastAPI()
+install_sso(app)   # вход через портал, если заданы PORTAL_URL и SSO_APP_ID; иначе без изменений
 
 app.add_middleware(
     CORSMiddleware,

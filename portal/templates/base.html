@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}ServiceGuru{% endblock %}</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#20243a;--border:#2a2d3e;--accent:#4f6ef7;--accent-h:#3a56e0;
+--success:#34d399;--danger:#f87171;--text:#e8eaf0;--muted:#8b93a7;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;padding:24px 16px 60px}
+a{color:var(--accent);text-decoration:none}
+.top{max-width:960px;margin:0 auto 32px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.logo{background:var(--accent);color:#fff;font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;padding:5px 14px;border-radius:4px}
+.top nav{display:flex;gap:16px;font-size:14px;flex:1}
+.top form{display:inline}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-family:Georgia,serif;font-weight:400;font-size:28px;margin-bottom:6px}
+.sub{color:var(--muted);font-size:14px;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
+.tile{display:block;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;color:var(--text);transition:.15s}
+.tile:hover{border-color:var(--accent);transform:translateY(-2px)}
+.tile b{font-size:16px;display:block;margin-bottom:6px}
+.tile span{color:var(--muted);font-size:13px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px}
+.card.narrow{max-width:380px;margin:60px auto}
+label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
+input[type=text],input[type=password],input[type=url]{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px 12px;font-size:14px}
+select{background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:10px 12px;font-size:14px}
+input:focus{outline:none;border-color:var(--accent)}
+button,.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;margin-top:16px}
+button:hover{background:var(--accent-h)}
+button.ghost{background:transparent;border:1px solid var(--border);color:var(--text);margin:0;padding:6px 12px}
+button.danger{background:transparent;border:1px solid var(--danger);color:var(--danger);margin:0;padding:6px 12px}
+.err{color:var(--danger);font-size:13px;margin:10px 0}.ok{color:var(--success);font-size:13px;margin:10px 0}
+table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border)}th{color:var(--muted);font-weight:500;font-size:12px}
+.chk{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:14px;color:var(--text)}
+.chk input{width:auto}
+.tag{font-size:11px;background:var(--surface2);border-radius:4px;padding:2px 8px;color:var(--muted)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.row{grid-template-columns:1fr}}
+code{background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:13px}
+</style>
+</head>
+<body>
+{% if me %}
+<div class="top">
+  <span class="logo">ServiceGuru</span>
+  <nav>
+    <a href="/">Проекты</a>
+    {% if me.is_admin %}<a href="/admin/users">Сотрудники</a><a href="/admin/apps">Подключения</a>{% endif %}
+    <a href="/account">{{ me.name or me.login }}</a>
+  </nav>
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="ghost">Выйти</button></form>
+</div>
+{% endif %}
+<div class="wrap">{% block body %}{% endblock %}</div>
+</body>
+</html>

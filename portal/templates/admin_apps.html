@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% block title %}Подключения — ServiceGuru{% endblock %}
+{% block body %}
+<h1>Подключённые проекты</h1>
+<p class="sub">«Единый вход» — проект сам проверяет токен портала. «Только ссылка» — просто плитка со ссылкой (для сторонних сервисов).</p>
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+{% for r in rows %}
+<div class="card">
+  <form method="post" action="/admin/apps">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="app_id" value="{{ r.id }}">
+    <div class="row"><div><label>Название</label><input type="text" name="name" value="{{ r.name }}"></div>
+    <div><label>id проекта (латиницей, он же audience токена)</label><input type="text" name="slug" value="{{ r.slug }}"></div></div>
+    <label>Описание</label><input type="text" name="description" value="{{ r.description }}">
+    <div class="row"><div><label>Адрес проекта</label><input type="url" name="url" value="{{ r.url }}"></div>
+    <div><label>Путь приёма токена</label><input type="text" name="callback_path" value="{{ r.callback_path }}"></div></div>
+    <label>Тип</label><select name="kind"><option value="sso" {% if r.kind=='sso' %}selected{% endif %}>Единый вход</option><option value="link" {% if r.kind=='link' %}selected{% endif %}>Только ссылка</option></select>
+    <div style="display:flex;gap:8px;align-items:center"><button>Сохранить</button></div>
+  </form>
+  <form method="post" action="/admin/apps/{{ r.id }}/delete" onsubmit="return confirm('Удалить проект?')">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger" style="margin-top:8px">Удалить</button>
+  </form>
+</div>
+{% endfor %}
+<div class="card">
+  <b>Добавить проект</b>
+  <form method="post" action="/admin/apps">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="app_id" value="0">
+    <div class="row"><div><label>Название</label><input type="text" name="name" required></div>
+    <div><label>id проекта (латиницей)</label><input type="text" name="slug" placeholder="contracts" required></div></div>
+    <label>Описание</label><input type="text" name="description">
+    <div class="row"><div><label>Адрес проекта</label><input type="url" name="url" placeholder="https://..." required></div>
+    <div><label>Путь приёма токена</label><input type="text" name="callback_path" value="/sso/callback"></div></div>
+    <label>Тип</label><select name="kind"><option value="sso">Единый вход</option><option value="link">Только ссылка</option></select>
+    <button>Добавить</button>
+  </form>
+</div>
+<p class="sub">Публичный ключ для проектов: <a href="/.well-known/portal-public-key.pem">{{ portal }}/.well-known/portal-public-key.pem</a></p>
+{% endblock %}

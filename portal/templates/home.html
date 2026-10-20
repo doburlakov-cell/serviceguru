@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block title %}Проекты — ServiceGuru{% endblock %}
+{% block body %}
+<h1>Ваши проекты</h1><p class="sub">Выберите проект — вход произойдёт автоматически.</p>
+{% if apps %}
+<div class="grid">
+  {% for a in apps %}
+  <a class="tile" href="/go/{{ a.slug }}"><b>{{ a.name }}</b><span>{{ a.description }}</span></a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card">Вам пока не выдан доступ ни к одному проекту. Обратитесь к администратору.</div>
+{% endif %}
+{% endblock %}
