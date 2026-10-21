@@ -633,6 +633,37 @@ def assign_targets(rows, dedupe):
     return chosen, len(rows) - len(chosen)
 
 
+async def campaign_blockers(con, c, now, beat) -> list[str]:
+    """Понятные причины, по которым запущенная рассылка сейчас ничего не отправляет."""
+    if c["status"] != "running" or not c["pending"]:
+        return []
+    why = []
+    if beat is None or time.time() - beat > 240:
+        why.append("Cron не вызывает /api/tick (последний запуск "
+                   + ("не найден" if beat is None else f"{int((time.time() - beat) // 60)} мин назад")
+                   + "). Без него рассылка не идёт: проверьте задание на cron-job.org.")
+    if not in_window(c, now):
+        local = now.astimezone(ZoneInfo(c["tz"]))
+        why.append(f"Сейчас {local:%H:%M} ({c['tz']}), это вне окна отправки {c['window_start']}–{c['window_end']} ч. "
+                   f"Отправка начнётся в {c['window_start']}:00. Окно можно расширить при создании рассылки.")
+    accs = await con.fetch("select id, name, status, blocked_until from accounts where id=any($1)", c["account_ids"])
+    if not accs:
+        why.append("В рассылке не выбран ни один аккаунт.")
+    for a in accs:
+        if a["status"] != "active":
+            why.append(f"Аккаунт «{a['name']}» не активен ({a['status']}): подключите его заново на вкладке «Аккаунты».")
+        elif a["blocked_until"] and a["blocked_until"] > now:
+            until = a["blocked_until"].astimezone(ZoneInfo(c["tz"]))
+            why.append(f"Аккаунт «{a['name']}» на паузе из-за ограничения Telegram до {until:%d.%m %H:%M}.")
+    if c["per_day"] and c["per_day"] > 0:
+        day_start = now.astimezone(ZoneInfo(c["tz"])).replace(hour=0, minute=0, second=0, microsecond=0)
+        done = await con.fetchval(
+            "select count(*) from targets where campaign_id=$1 and status='sent' and sent_at >= $2", c["id"], day_start)
+        if done >= c["per_day"] * max(1, len(accs)):
+            why.append(f"Достигнут дневной лимит ({c['per_day']} на аккаунт). Продолжится завтра.")
+    return why
+
+
 @app.get("/api/campaigns", dependencies=[Depends(auth)])
 async def list_campaigns(con=Depends(get_db)):
     rows = await con.fetch(
@@ -642,7 +673,12 @@ async def list_campaigns(con=Depends(get_db)):
         "count(t.id) filter (where t.status='failed') as failed, "
         "count(t.id) filter (where t.status='skipped') as skipped "
         "from campaigns c left join targets t on t.campaign_id=c.id group by c.id order by c.id desc")
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    beat = await con.fetchval("select v from meta where k='last_tick'")
+    now = datetime.now(timezone.utc)
+    for c in out:
+        c["why"] = await campaign_blockers(con, c, now, beat)
+    return out
 
 
 @app.post("/api/campaigns", dependencies=[Depends(auth)])
@@ -1530,6 +1566,8 @@ background:linear-gradient(135deg,#5338ef,#6f4bff 60%,#8a5cff);box-shadow:0 10px
 .pill.ok{background:rgba(67,180,133,.16);color:var(--success)}.pill.warn{background:rgba(241,203,127,.28);color:var(--warn)}.pill.bad{background:rgba(232,93,117,.15);color:var(--brick)}.pill.pur{background:rgba(83,56,239,.12);color:var(--purple)}
 .pill.ok::before,.pill.warn::before,.pill.bad::before,.pill.pur::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .pill.ok::before{animation:pulse 1.8s infinite}
+.why{margin-top:8px;padding:9px 13px;border-radius:13px;background:rgba(241,203,127,.2);border:1px solid rgba(241,203,127,.5);color:var(--warn);font-size:13px;font-weight:600;line-height:1.4}
+.why.ok{background:rgba(67,180,133,.12);border-color:rgba(67,180,133,.35);color:var(--success)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 currentColor}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 450px;gap:22px;align-items:start}
 @media(max-width:1100px){.grid{grid-template-columns:1fr}.sticky{position:static!important}}
@@ -1811,7 +1849,8 @@ async function campaignsView(){
   ${c.media_id?`<img class="thumb" src="/api/media/${c.media_id}">`:''}<div style="min-width:0"><b>${esc(c.name)}</b> ${pill(c.status)}
   <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''}${c.dupes?' · дублей убрано '+c.dupes:''}${c.recent_skipped?' · уже писали: '+c.recent_skipped:''} · ${c.per_hour||c.per_minute*60}/час · ${c.window_start}–${c.window_end} ч</div>${progBar(c)}
   ${c.status==='scheduled'&&c.start_at?`<div class="mut" style="color:var(--purple)">Старт: ${new Date(c.start_at).toLocaleString('ru',{timeZone:c.tz,dateStyle:'short',timeStyle:'short'})} (${esc(c.tz)})</div>`:''}
-  ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}</div></div>
+  ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}
+  ${(c.why||[]).map(w=>`<div class="why">⚠ ${esc(w)}</div>`).join('')}${c.status==='running'&&c.pending&&!(c.why||[]).length&&!c.sent?`<div class="why ok">Всё в порядке: первое сообщение уйдёт в ближайшую минуту. Темп ${c.per_hour||c.per_minute*60} в час.</div>`:''}</div></div>
   <div class="btns"><button class="btn sec sm" onclick="prevC(${c.id})">Предпросмотр</button><button class="btn sec sm" onclick="testC(${c.id},this)">Тест</button>
   ${c.status==='running'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Пауза</button>`
    :c.status==='scheduled'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Отменить запуск</button>`
