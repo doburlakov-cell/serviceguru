@@ -1065,6 +1065,7 @@ async def inbox_summary(con=Depends(get_db)):
     return {
         "needs": await con.fetchval("select count(*) from conversations where needs_reply in ('pending','yes')"),
         "unread": await con.fetchval("select count(*) from conversations where unread > 0"),
+        "build": BUILD,
     }
 
 
@@ -1714,6 +1715,7 @@ background:linear-gradient(135deg,#5338ef,#6f4bff 60%,#8a5cff);box-shadow:0 10px
 .item{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:center;padding:14px 0;border-top:1px solid var(--line)}.item:first-of-type{border-top:0}
 .btns{display:flex;gap:8px;flex-wrap:wrap}.mut{color:var(--mut);font-size:13px}
 .chk{display:flex;gap:6px;align-items:center;margin:0;white-space:nowrap}
+.upd{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:98;display:flex;align-items:center;gap:14px;padding:10px 12px 10px 18px;border-radius:16px;background:#141c4d;color:#fff;font-weight:600;font-size:14px;box-shadow:var(--shadow2);animation:toast .4s cubic-bezier(.2,1.2,.4,1) both}
 .pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font:600 12px Manrope;background:rgba(120,130,170,.14);color:var(--mut);white-space:nowrap}
 .pill.ok{background:rgba(67,180,133,.16);color:var(--success)}.pill.warn{background:rgba(241,203,127,.28);color:var(--warn)}.pill.bad{background:rgba(232,93,117,.15);color:var(--brick)}.pill.pur{background:rgba(83,56,239,.12);color:var(--purple)}
 .pill.ok::before,.pill.warn::before,.pill.bad::before,.pill.pur::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
@@ -1932,6 +1934,7 @@ function shell(){$('#root').innerHTML=`<div class="app"><aside class="side" id="
 async function gotoNew(){await show('campaigns');setTimeout(()=>{const x=$('#cn');if(x){x.scrollIntoView({behavior:'smooth',block:'center'});x.focus()}},160)}
 function countUps(){$$('[data-n]').forEach(el=>{const n=+el.dataset.n;if(!isFinite(n)||n<2){el.textContent=el.dataset.n;return}let s0=null;const step=t=>{s0=s0||t;const p=Math.min(1,(t-s0)/800);el.textContent=Math.round(n*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(step)};requestAnimationFrame(step)})}
 async function show(t){clearTimers();tab=t;try{localStorage.setItem('tab',t)}catch{}
+ if(UPDATE_READY){location.reload();return}
  const meta=TABS.find(x=>x[0]===t)||TABS[0];$('#pt').textContent=meta[1];$('#ps').textContent=meta[3];
  $$('.side nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));$('#side').classList.remove('open');$('#scrim').classList.remove('on');
  const v=$('#view');v.classList.remove('in');v.innerHTML='<div class="skel"></div><div class="skel" style="height:170px"></div><div class="skel"></div>';
@@ -1939,7 +1942,11 @@ async function show(t){clearTimers();tab=t;try{localStorage.setItem('tab',t)}cat
  v.classList.remove('in');void v.offsetWidth;v.classList.add('in');countUps()}
 async function refreshBadges(){try{const s=await api('GET','/api/inbox/summary');
  const set=(t,n)=>{const c=document.querySelector(`.side nav button[data-t=${t}] .cnt`);if(c){c.textContent=n||'';c.hidden=!n}};
+ if(s.build&&window.BUILD&&s.build!==window.BUILD)newVersion();
  set('chat',s.unread);set('needs',s.needs);document.title=(s.needs+s.unread?`(${s.needs+s.unread}) `:'')+'Рассылка · ServiceGuru'}catch{}}
+let UPDATE_READY=false;
+function newVersion(){if(UPDATE_READY)return;UPDATE_READY=true;const b=document.createElement('div');b.className='upd';
+ b.innerHTML=`<span>Вышла новая версия платформы</span><button class="btn sm" id="updb">Обновить</button>`;document.body.appendChild(b);$('#updb').onclick=()=>location.reload()}
 let BADGE_T=null;
 let TICKING=false,TICK_T=null;
 async function uiTick(){if(TICKING||!$('#root .app'))return;TICKING=true;try{await fetch('/api/tick-ui',{method:'POST'})}catch{}TICKING=false}
@@ -2345,6 +2352,10 @@ api('GET','/api/me').then(start).catch(e=>{if(e!==0)login()});
 </script></body></html>"""
 
 
+BUILD = hashlib.sha256(PAGE.encode()).hexdigest()[:10]   # меняется при любом изменении интерфейса
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return PAGE.replace("<head>", "<head><script>window.SSO=true</script>", 1) if sso_enabled() else PAGE
+    head = f"<head><script>window.BUILD='{BUILD}'" + (";window.SSO=true" if sso_enabled() else "") + "</script>"
+    return HTMLResponse(PAGE.replace("<head>", head, 1), headers={"Cache-Control": "no-store"})
