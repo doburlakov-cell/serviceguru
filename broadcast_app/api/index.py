@@ -769,6 +769,69 @@ class StatusIn(BaseModel):
     status: str
 
 
+class CampaignEdit(BaseModel):
+    name: str | None = None
+    text: str | None = None
+    media_id: int | None = None      # новое фото (загружено через /api/media)
+    clear_media: bool = False        # убрать фото
+    per_hour: int | None = None
+    per_day: int | None = None
+    window_start: int | None = None
+    window_end: int | None = None
+    tz: str | None = None
+    skip_recent_days: int | None = None
+
+
+@app.post("/api/campaigns/{cid}/edit", dependencies=[Depends(auth)])
+async def edit_campaign(cid: int, b: CampaignEdit, con=Depends(get_db)):
+    """Изменить рассылку, в том числе идущую. Получатели и аккаунты не меняются; уже отправленное остаётся как есть.
+    Если изменились текст или фото и новый вариант не проверен тестом, рассылка встаёт на паузу."""
+    c = await con.fetchrow("select * from campaigns where id=$1", cid)
+    if not c:
+        raise HTTPException(404, "Рассылка не найдена")
+    if c["status"] == "done":
+        raise HTTPException(400, "Завершённую рассылку изменить нельзя")
+    name = c["name"] if b.name is None else b.name.strip()
+    if not name:
+        raise HTTPException(400, "Название не может быть пустым")
+    text = c["text"] if b.text is None else b.text
+    media_id = None if b.clear_media else (b.media_id if b.media_id is not None else c["media_id"])
+    if not (text.strip() or media_id):
+        raise HTTPException(400, "Нужны текст или фото")
+    if media_id and not await con.fetchval("select 1 from media where id=$1", media_id):
+        raise HTTPException(400, "Фото не найдено, загрузите заново")
+    per_hour = c["per_hour"] if b.per_hour is None else b.per_hour
+    per_day = c["per_day"] if b.per_day is None else b.per_day
+    ws = c["window_start"] if b.window_start is None else b.window_start
+    we = c["window_end"] if b.window_end is None else b.window_end
+    tz = c["tz"] if b.tz is None else b.tz
+    skip = c["skip_recent_days"] if b.skip_recent_days is None else b.skip_recent_days
+    if not 1 <= per_hour <= 1200:
+        raise HTTPException(400, "Сообщений в час: от 1 до 1200")
+    if per_day < 0 or not 0 <= (skip or 0) <= 365:
+        raise HTTPException(400, "Проверьте лимит в день и «писали за последние дней»")
+    if not (0 <= ws <= 23 and 1 <= we <= 24):
+        raise HTTPException(400, "Окно отправки: начало 0–23, конец 1–24")
+    try:
+        ZoneInfo(tz)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Неизвестный часовой пояс")
+    status, tested_at = c["status"], c["tested_at"]
+    content_changed = text != c["text"] or media_id != c["media_id"]
+    tested = True
+    if content_changed:
+        tested = bool(await con.fetchval(
+            "select 1 from tested where key=$1 and at > now() - interval '24 hours'", test_key(text, media_id)))
+        tested_at = datetime.now(timezone.utc) if tested else None
+        if not tested and status in ("running", "scheduled"):
+            status = "paused"
+    await con.execute(
+        "update campaigns set name=$2, text=$3, media_id=$4, per_hour=$5, per_minute=$6, per_day=$7, window_start=$8, "
+        "window_end=$9, tz=$10, skip_recent_days=$11, status=$12, tested_at=$13 where id=$1",
+        cid, name, text, media_id, per_hour, max(1, -(-per_hour // 60)), per_day, ws, we, tz, skip or 0, status, tested_at)
+    return {"ok": True, "content_changed": content_changed, "tested": tested, "paused": status != c["status"]}
+
+
 @app.post("/api/campaigns/{cid}/status", dependencies=[Depends(auth)])
 async def set_status(cid: int, b: StatusIn, con=Depends(get_db)):
     if b.status not in ("running", "paused"):
@@ -1963,7 +2026,7 @@ async function campaignsView(){
   ${c.status==='running'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Пауза</button>`
    :c.status==='scheduled'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Отменить запуск</button>`
    :c.status!=='done'?`<button class="btn sm" ${c.tested_at?'':'disabled title="Сначала отправьте тест"'} onclick="st(${c.id},'running')">Запустить</button><button class="btn sec sm" ${c.tested_at?'':'disabled title="Сначала отправьте тест"'} onclick="schedC(${c.id},'${esc(c.tz)}')">Запланировать</button>`:''}
-  <button class="btn sec sm" onclick="tg(${c.id})">Детали</button><button class="btn dng sm" onclick="delC(${c.id})">Удалить</button></div></div>`).join('')||'<p class="mut">Пока нет рассылок</p>'}</div>
+  <button class="btn sec sm" onclick="tg(${c.id})">Детали</button>${c.status!=='done'?`<button class="btn sec sm" onclick="editC(${c.id})">Изменить</button>`:''}<button class="btn dng sm" onclick="delC(${c.id})">Удалить</button></div></div>`).join('')||'<p class="mut">Пока нет рассылок</p>'}</div>
  <div class="card"><h2>Новая рассылка</h2>
  <label style="margin-top:0">Название</label><input id="cn">
  <label>Текст ({name} — первое слово названия чата)</label><textarea id="ct" rows="5"></textarea>
@@ -2022,6 +2085,36 @@ function progBar(c){const t=c.sent+c.failed+c.skipped+c.pending;if(!t)return '';
  return `<div class="prog" title="Отправлено ${c.sent} из ${t}"><i class="s" style="width:${w(c.sent)}"></i><i class="f" style="width:${w(c.failed)}"></i><i class="k" style="width:${w(c.skipped)}"></i></div>`}
 function dupeNote(w,r){const pa=Object.entries(r.per_account||{});
  return `${w}: контактов ${r.targets}${r.dupes?`, убрано дублей ${r.dupes}`:''}${r.recent?`, пропущено уже получавших ${r.recent}`:''}${pa.length>1?` (${pa.map(([k,v])=>k+' — '+v).join(', ')})`:''}.`}
+async function editC(id){
+ let c;try{c=(await api('GET','/api/campaigns')).find(x=>x.id===id)}catch{return}if(!c)return;
+ let file=null,clear=false;
+ const m=modal(`<h2>Изменить рассылку</h2>
+  <p class="mut" style="margin-top:0">Уже отправленные сообщения не меняются. Новый текст и настройки получат те, кому ещё не отправлено. Получателей и аккаунты изменить нельзя: для новых контактов создайте новую рассылку.</p>
+  <label style="margin-top:0">Название</label><input id="en" value="${esc(c.name)}">
+  <label>Текст ({name} — первое слово названия чата)</label><textarea id="et" rows="6">${esc(c.text)}</textarea>
+  <label>Фото</label><div class="drop" id="edrop" style="padding:12px"><input id="ef" type="file" accept="image/jpeg,image/png,image/webp">
+   <div class="drop-prev" id="eprev" ${c.media_id?'':'hidden'}><img id="eimg" alt="" src="${c.media_id?'/api/media/'+c.media_id:''}"><div><b id="ename">Текущее фото</b><small>можно заменить или убрать</small></div><button type="button" class="btn dng sm" id="erm">Убрать</button></div>
+   <div class="drop-in" id="eadd" ${c.media_id?'hidden':''}><span class="drop-ic">${ico('image')}</span><div><b>Добавить фото</b><small>JPEG, PNG или WebP до 4 МБ</small></div><button type="button" class="btn sm" id="ebtn">Выберите файл</button></div></div>
+  <div class="row"><div><label>Сообщений в час (на аккаунт)</label><input id="eph" type="number" min="1" max="1200" value="${c.per_hour||c.per_minute*60}"></div>
+   <div><label>Макс. в день на аккаунт (0 — без лимита)</label><input id="epd" type="number" min="0" value="${c.per_day||0}"></div></div>
+  <div class="row"><div><label>Отправлять с (час)</label><input id="ews" type="number" min="0" max="23" value="${c.window_start}"></div>
+   <div><label>до (час)</label><input id="ewe" type="number" min="1" max="24" value="${c.window_end}"></div>
+   <div><label>Часовой пояс</label><input id="etz" value="${esc(c.tz)}"></div></div>
+  <label>Не писать тем, кому уже писали за последние (дней, 0 — не проверять)</label><input id="esr" type="number" min="0" max="365" value="${c.skip_recent_days||0}">
+  <p class="mut">Если изменить текст или фото, рассылка встанет на паузу, пока новый вариант не пройдёт тест. Нажмите «Тест» перед сохранением, и рассылка продолжит идти без остановки.</p>
+  <div class="btns" style="margin-top:12px"><button class="btn" id="esv">Сохранить</button><button class="btn sec" id="ets">Тест</button><button class="btn sec" onclick="this.closest('.modal').remove()">Отмена</button></div>`);
+ const render=()=>{const has=!!file||(!clear&&!!c.media_id);$('#eprev').hidden=!has;$('#eadd').hidden=has;
+  if(file){$('#eimg').src=URL.createObjectURL(file);$('#ename').textContent=file.name}else if(has){$('#eimg').src='/api/media/'+c.media_id;$('#ename').textContent='Текущее фото'}};
+ const pick=f=>{if(!f)return;if(!/^image\/(jpeg|png|webp)$/.test(f.type)){note('Нужно фото: JPEG, PNG или WebP',1);return}if(f.size>4e6){note('Фото больше 4 МБ',1);return}file=f;clear=false;render()};
+ $('#ef').onchange=e=>pick(e.target.files[0]);$('#ebtn').onclick=()=>$('#ef').click();
+ $('#erm').onclick=()=>{file=null;clear=true;$('#ef').value='';render()};
+ const mediaId=async()=>{if(file){const fd=new FormData();fd.append('file',file);return (await api('POST','/api/media',fd,true)).id}return clear?null:c.media_id};
+ $('#ets').onclick=async()=>{const b=$('#ets');b.disabled=true;b.textContent='Отправка…';try{const mid=await mediaId();const r=await api('POST','/api/test-send',{text:$('#et').value,media_id:mid,account_ids:c.account_ids});showTest(r)}catch{}finally{b.disabled=false;b.textContent='Тест'}};
+ $('#esv').onclick=async()=>{const b=$('#esv');b.disabled=true;try{const mid=await mediaId();const body={name:$('#en').value,text:$('#et').value,per_hour:+$('#eph').value,per_day:+$('#epd').value,
+   window_start:+$('#ews').value,window_end:+$('#ewe').value,tz:$('#etz').value,skip_recent_days:+$('#esr').value||0};
+  if(mid)body.media_id=mid;else if(clear)body.clear_media=true;
+  const r=await api('POST',`/api/campaigns/${id}/edit`,body);m.remove();
+  note(r.paused?'Сохранено. Текст или фото изменены, рассылка на паузе: отправьте тест и запустите снова.':'Изменения сохранены.');campaignsView()}catch{}finally{b.disabled=false}}}
 async function prevC(id){const c=(await api('GET','/api/campaigns')).find(x=>x.id===id);
  modal(phone(c.text,c.media_id?'/api/media/'+c.media_id:null,'ServiceGuru','Анна')+'<div class="btns" style="margin-top:14px"><button class="btn sec" onclick="this.closest(\'.modal\').remove()">Закрыть</button></div>');fitPhones()}
 async function testC(id,b){b.disabled=true;b.textContent='Отправка…';try{showTest(await api('POST',`/api/campaigns/${id}/test`))}catch{}finally{campaignsView()}}
