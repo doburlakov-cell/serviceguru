@@ -9,6 +9,7 @@ import hmac
 import io
 import os
 import random
+import re
 import secrets
 import sys
 import time
@@ -22,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel, Chat, InputPeerChannel, InputPeerChat, InputPeerUser, User
+from telethon.tl.types import (Channel, Chat, InputPeerChannel, InputPeerChat, InputPeerUser, MessageEntityUrl, User)
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _sso_client import enabled as sso_enabled, install_sso  # единый вход через портал, если заданы PORTAL_URL и SSO_APP_ID
@@ -260,18 +261,37 @@ def client_for(acc) -> TelegramClient:
     return TelegramClient(StringSession(dec(acc["session"])), acc["api_id"], dec(acc["api_hash"]))
 
 
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>\"']+", re.I)
+URL_TAIL = ".,;:!?)]}»”…"
+
+
+def url_entities(text: str) -> list:
+    """Явная разметка ссылок: Telegram делает кликабельными именно сущности, а не просто текст.
+    Позиции считаются в единицах UTF-16 (эмодзи занимают две)."""
+    out = []
+    for m in URL_RE.finditer(text or ""):
+        url = m.group(0).rstrip(URL_TAIL)
+        if len(url) < 8:
+            continue
+        offset = len(text[:m.start()].encode("utf-16-le")) // 2
+        out.append(MessageEntityUrl(offset=offset, length=len(url.encode("utf-16-le")) // 2))
+    return out
+
+
 async def deliver(client, peer, text, media):
     """Фото с подписью (если подпись влезает в лимит Telegram) либо фото и текст отдельно.
+    Текст уходит как есть (без Markdown), ссылки размечены явно, чтобы были кликабельны.
     Возвращает id последнего отправленного сообщения (по нему определяем прочтение)."""
     if not media:
-        return (await client.send_message(peer, text)).id
+        return (await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text))).id
     f = io.BytesIO(bytes(media["data"]))
     f.name = media["filename"] or "photo.jpg"
     if len(text) <= CAPTION_LIMIT:
-        return (await client.send_file(peer, f, caption=text, force_document=False)).id
+        return (await client.send_file(peer, f, caption=text, force_document=False, parse_mode=None,
+                                       formatting_entities=url_entities(text))).id
     last = await client.send_file(peer, f, force_document=False)
     if text:
-        last = await client.send_message(peer, text)
+        last = await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text))
     return last.id
 
 
@@ -1656,6 +1676,7 @@ background:#fff;box-shadow:0 24px 60px rgba(25,40,83,.35),0 0 0 2px #2a3166;font
 .msg img{display:block;width:100%;max-height:340px;object-fit:cover;border-radius:14px}
 .msg .tx{padding:6px 9px 2px;font-size:16px;line-height:1.35;word-break:break-word}
 .msg .tm{text-align:right;font-size:12px;color:#8a97a5;padding:0 8px 3px}
+.lnk{color:#2a8ee0;text-decoration:underline;word-break:break-all}
 .ph-in{display:flex;align-items:center;gap:12px;background:#fff;border-top:1px solid #e6e9f3;padding:10px 14px 22px;color:#8a97a5;font-size:22px}
 .ph-in .inp{flex:1;background:#f1f3f5;border-radius:20px;padding:7px 14px;font-size:16px}
 .contact{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);transition:background .15s}.contact:first-child{border-top:0}
@@ -1790,6 +1811,7 @@ async function api(m,u,b,form){const o={method:m,headers:{}};if(form)o.body=b;el
  if(r.status==401&&u!=='/api/login'){const j=await r.json().catch(()=>({}));if(j.login_url){location.href=j.login_url;throw 0}login();throw 0}
  const d=await r.json().catch(()=>({}));
  if(!r.ok){const det=Array.isArray(d.detail)?d.detail.map(x=>x.msg).join('; '):d.detail;note(det||('Ошибка '+r.status),1);throw d}return d}
+const lk=h=>h.replace(/(https?:\/\/[^\s<]+|www\.[^\s<]+)/g,'<span class="lnk">$1</span>');
 function modal(html){const m=document.createElement('div');m.className='modal';m.innerHTML='<div>'+html+'</div>';
  m.addEventListener('click',e=>{if(e.target===m)m.remove()});document.body.appendChild(m);return m}
 const stMap={draft:['черновик',''],running:['идёт','ok'],scheduled:['запланирована','pur'],paused:['пауза','warn'],done:['завершена','pur'],active:['активен','ok'],code_sent:['ждёт код','warn'],error:['ошибка','bad']};
@@ -1896,7 +1918,7 @@ addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()===
 function unlockAnim(o){return new Promise(res=>{
  if(matchMedia('(prefers-reduced-motion:reduce)').matches||!$('#root .app')){res();return}
  const d=new Date(),tm=d.toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'}),dt0=d.toLocaleDateString('ru',{weekday:'long',day:'numeric',month:'long'}),dt=dt0.charAt(0).toUpperCase()+dt0.slice(1);
- const tx=esc(o.text||'').replace(/\{name\}/g,'Анна').replace(/\n/g,'<br>');
+ const tx=lk(esc(o.text||'').replace(/\{name\}/g,'Анна')).replace(/\n/g,'<br>');
  const ov=document.createElement('div');ov.className='un-ov';
  ov.innerHTML=`<div class="un-wrap"><div class="pfit"><div class="phone un">
   <div class="screen u-app"><div class="sbar"><span>${tm}</span><span style="letter-spacing:2px;font-size:13px">▂▄▆ ▮▮▮</span></div>
@@ -1917,7 +1939,7 @@ function unlockAnim(o){return new Promise(res=>{
 
 /* ---- предпросмотр на телефоне ---- */
 function phone(text,img,sender,name){
- const t=esc(text||'').replace(/\{name\}/g,esc(name||'Анна')).replace(/\n/g,'<br>');
+ const t=lk(esc(text||'').replace(/\{name\}/g,esc(name||'Анна'))).replace(/\n/g,'<br>');
  return `<div class="pfit"><div class="phone"><div class="screen"><div class="sbar"><span>9:41</span><span style="letter-spacing:2px;font-size:13px">▂▄▆ ▮▮▮</span></div>
  <div class="ph-top"><span class="back">‹</span><span class="logo-mark sm">SG</span><div><b>${esc(sender||'ServiceGuru')}</b><small>был(а) недавно</small></div></div>
  <div class="ph-body"><div class="day">Сегодня</div><div class="msg">${img?`<img src="${img}" alt="">`:''}<div class="tx" ${t?'':'style="color:#8a97a5"'}>${t||'Текст сообщения'}</div><div class="tm">12:30</div></div></div>
@@ -2109,7 +2131,7 @@ const prev=(t,k)=>t||KL[k]||'';
 const listTime=d=>{if(!d)return '';const x=new Date(d);return x.toDateString()===new Date().toDateString()?hhmm(d):x.toLocaleDateString('ru',{day:'2-digit',month:'2-digit'})};
 function renderMsgs(items){let last='';return items.map(m=>{const day=dayLabel(m.date),sep=day!==last?`<div class="day">${day}</div>`:'';last=day;
  const st=m.out?(m.status==='queued'?'🕓':m.status==='failed'?'❗':'✓'):'';
- return sep+`<div class="b ${m.out?'out':'in'}">${m.kind&&m.kind!=='text'?`<div class="kl">${KL[m.kind]||''}</div>`:''}${m.text?`<div>${esc(m.text).replace(/\n/g,'<br>')}</div>`:''}<div class="tm">${hhmm(m.date)} ${st}${m.status==='failed'?' не отправлено':''}</div></div>`}).join('')}
+ return sep+`<div class="b ${m.out?'out':'in'}">${m.kind&&m.kind!=='text'?`<div class="kl">${KL[m.kind]||''}</div>`:''}${m.text?`<div>${lk(esc(m.text)).replace(/\n/g,'<br>')}</div>`:''}<div class="tm">${hhmm(m.date)} ${st}${m.status==='failed'?' не отправлено':''}</div></div>`}).join('')}
 async function chatView(){
  const accs=await api('GET','/api/accounts');
  $('#view').innerHTML=`<div class="msgr ${OPEN?'has-chat':''}" id="msgr"><div class="card mlist">
@@ -2154,7 +2176,7 @@ async function needsView(){const r=await api('GET','/api/needs');
  (r.map(n=>`<div class="card need" id="n-${n.account_id}-${n.chat_id}"><div class="item" style="border:0;padding:0"><div style="display:flex;gap:12px;align-items:center;min-width:0"><span class="avatar">${esc(ini(n.title))}</span>
   <div><b>${esc(n.title)}</b> <span class="pill">${esc(n.account)}</span> ${n.needs_reply==='yes'?'<span class="pill pur">в работе</span>':'<span class="pill warn">новый ответ</span>'}
   <div class="mut">${n.campaign?`Рассылка «${esc(n.campaign)}», отправлена ${ago(n.mailed_at)}`:''}${n.needs_since?` · ответ ${ago(n.needs_since)}`:''}</div></div></div></div>
-  <div class="recent">${n.recent.map(m=>`<div class="b in"><div>${esc(prev(m.text,m.kind)).replace(/\n/g,'<br>')}</div><div class="tm">${hhmm(m.date)}</div></div>`).join('')}</div>
+  <div class="recent">${n.recent.map(m=>`<div class="b in"><div>${lk(esc(prev(m.text,m.kind))).replace(/\n/g,'<br>')}</div><div class="tm">${hhmm(m.date)}</div></div>`).join('')}</div>
   <div class="btns">${n.needs_reply==='yes'?`<button class="btn" onclick="needGo(${n.account_id},${n.chat_id})">Открыть чат</button>`:`<button class="btn" onclick="needDecide(${n.account_id},${n.chat_id},'yes')">Ответ требуется</button>`}
   <button class="btn sec" onclick="needDecide(${n.account_id},${n.chat_id},'no')">Ответ не требуется</button></div></div>`).join('')||'<div class="card"><p class="mut" style="margin:0">Пока нет ответов, требующих решения</p></div>')}
 function needGo(aid,cid){OPEN={aid,cid};show('chat')}
