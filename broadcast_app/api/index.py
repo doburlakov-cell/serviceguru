@@ -9,6 +9,7 @@ import hmac
 import io
 import os
 import random
+import secrets
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -92,6 +93,7 @@ create index if not exists targets_chat_idx on targets(chat_id);
 alter table targets add column if not exists replied_at timestamptz;
 alter table targets add column if not exists reply_checked_id bigint;
 create table if not exists locks(k text primary key, until timestamptz);
+create table if not exists settings(k text primary key, v text);
 create table if not exists account_events(
   id serial primary key, account_id int, kind text, seconds int, at timestamptz default now());
 alter table accounts add column if not exists inbox_checked_at timestamptz;
@@ -106,7 +108,7 @@ create table if not exists conversations(
   unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
   primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 7   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 8   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -633,15 +635,18 @@ def assign_targets(rows, dedupe):
     return chosen, len(rows) - len(chosen)
 
 
-async def campaign_blockers(con, c, now, beat) -> list[str]:
+async def campaign_blockers(con, c, now, beat, beat_cron) -> list[str]:
     """Понятные причины, по которым запущенная рассылка сейчас ничего не отправляет."""
     if c["status"] != "running" or not c["pending"]:
         return []
     why = []
     if beat is None or time.time() - beat > 240:
-        why.append("Cron не вызывает /api/tick (последний запуск "
+        why.append("Отправка не запускается: cron не вызывает /api/tick (последний запуск "
                    + ("не найден" if beat is None else f"{int((time.time() - beat) // 60)} мин назад")
-                   + "). Без него рассылка не идёт: проверьте задание на cron-job.org.")
+                   + "), а панель закрыта. Откройте панель или настройте cron кнопкой «Настроить cron».")
+    elif beat_cron is None or time.time() - beat_cron > 240:
+        why.append("Сейчас рассылка идёт только пока открыта эта панель. Чтобы она шла круглосуточно, настройте cron "
+                   "(кнопка «Настроить cron»).")
     if not in_window(c, now):
         local = now.astimezone(ZoneInfo(c["tz"]))
         why.append(f"Сейчас {local:%H:%M} ({c['tz']}), это вне окна отправки {c['window_start']}–{c['window_end']} ч. "
@@ -675,9 +680,10 @@ async def list_campaigns(con=Depends(get_db)):
         "from campaigns c left join targets t on t.campaign_id=c.id group by c.id order by c.id desc")
     out = [dict(r) for r in rows]
     beat = await con.fetchval("select v from meta where k='last_tick'")
+    beat_cron = await con.fetchval("select v from meta where k='last_tick_cron'")
     now = datetime.now(timezone.utc)
     for c in out:
-        c["why"] = await campaign_blockers(con, c, now, beat)
+        c["why"] = await campaign_blockers(con, c, now, beat, beat_cron)
     return out
 
 
@@ -1112,6 +1118,40 @@ async def needs_decide(aid: int, cid: int, b: NeedsIn, con=Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- настройка cron ----------
+async def cron_token(con, rotate: bool = False) -> str:
+    if not rotate:
+        v = await con.fetchval("select v from settings where k='cron_token'")
+        if v:
+            return v
+    v = secrets.token_urlsafe(24)
+    await con.execute("insert into settings(k, v) values('cron_token', $1) on conflict(k) do update set v=excluded.v", v)
+    return v
+
+
+def public_base(request: Request) -> str:
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return ("http://" if host.startswith(("localhost", "127.0.0.1")) else "https://") + host
+
+
+async def cron_state(con, request: Request, rotate: bool = False):
+    token = await cron_token(con, rotate)
+    beat = await con.fetchval("select v from meta where k='last_tick_cron'")
+    return {"url": f"{public_base(request)}/api/tick?key={token}",
+            "last_cron_ago": None if beat is None else max(0, int(time.time()) - beat)}
+
+
+@app.get("/api/cron-info", dependencies=[Depends(auth)])
+async def cron_info(request: Request, con=Depends(get_db)):
+    return await cron_state(con, request)
+
+
+@app.post("/api/cron-info/rotate", dependencies=[Depends(auth)])
+async def cron_rotate(request: Request, con=Depends(get_db)):
+    """Новый ключ: старая ссылка перестаёт работать (если ссылка попала не туда)."""
+    return await cron_state(con, request, rotate=True)
+
+
 # ---------- обзор ----------
 @app.get("/api/overview", dependencies=[Depends(auth)])
 async def overview(tz: str = "Europe/Moscow", con=Depends(get_db)):
@@ -1140,7 +1180,9 @@ async def overview(tz: str = "Europe/Moscow", con=Depends(get_db)):
         "and t.sent_at > now() - interval '24 hours') as sent_24h, "
         "(select count(*) from chats c where c.account_id=a.id) as chats from accounts a order by a.id")]
     beat = await con.fetchval("select v from meta where k='last_tick'")
+    beat_cron = await con.fetchval("select v from meta where k='last_tick_cron'")
     return {
+        "last_cron_ago": None if beat_cron is None else max(0, int(time.time()) - beat_cron),
         "today": today, "series": series, "campaigns": campaigns, "accounts": accounts,
         "needs": await con.fetchval("select count(*) from conversations where needs_reply in ('pending','yes')"),
         "unread": await con.fetchval("select count(*) from conversations where unread > 0"),
@@ -1417,17 +1459,44 @@ async def run_account(aid, camps, send_deadline, deadline):
         await con.close()
 
 
-@app.get("/api/tick")
-@app.post("/api/tick")
-async def tick(request: Request):
+async def tick_is_cron(request: Request) -> bool:
+    """Вызов от cron: заголовок Authorization: Bearer <CRON_SECRET> или ссылка с ключом ?key=<токен>."""
     cron = os.environ.get("CRON_SECRET", "")
-    if not cron or not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {cron}"):
-        raise HTTPException(401, "Нет доступа")
+    if cron and hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {cron}"):
+        return True
+    key = request.query_params.get("key", "")
+    if not key:
+        return False
     con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
     try:
         await ensure_schema(con)
-        await con.execute("insert into meta(k, v) values('last_tick', $1) on conflict(k) do update set v=excluded.v",
-                          int(time.time()))
+        token = await con.fetchval("select v from settings where k='cron_token'")
+    finally:
+        await con.close()
+    return bool(token) and hmac.compare_digest(key, token)
+
+
+@app.get("/api/tick")
+@app.post("/api/tick")
+async def tick(request: Request):
+    if not await tick_is_cron(request):
+        raise HTTPException(401, "Нет доступа")
+    return await run_tick("cron")
+
+
+@app.post("/api/tick-ui", dependencies=[Depends(auth)])
+async def tick_ui():
+    """Тик из открытой панели: пока вкладка открыта, рассылка идёт и без внешнего cron."""
+    return await run_tick("ui")
+
+
+async def run_tick(source: str):
+    con = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
+    try:
+        await ensure_schema(con)
+        for key in (("last_tick", "last_tick_cron") if source == "cron" else ("last_tick",)):
+            await con.execute("insert into meta(k, v) values($1, $2) on conflict(k) do update set v=excluded.v",
+                              key, int(time.time()))
         await con.execute("update campaigns set status='running' where status='scheduled' and start_at <= now()")
         await con.execute(
             "delete from media where created_at < now() - interval '1 day' "
@@ -1787,7 +1856,24 @@ async function refreshBadges(){try{const s=await api('GET','/api/inbox/summary')
  const set=(t,n)=>{const c=document.querySelector(`.side nav button[data-t=${t}] .cnt`);if(c){c.textContent=n||'';c.hidden=!n}};
  set('chat',s.unread);set('needs',s.needs);document.title=(s.needs+s.unread?`(${s.needs+s.unread}) `:'')+'Рассылка · ServiceGuru'}catch{}}
 let BADGE_T=null;
-async function start(){if(!TABS.find(x=>x[0]===tab))tab='overview';shell();show(tab);refreshBadges();clearInterval(BADGE_T);BADGE_T=setInterval(refreshBadges,60000)}
+let TICKING=false,TICK_T=null;
+async function uiTick(){if(TICKING||!$('#root .app'))return;TICKING=true;try{await fetch('/api/tick-ui',{method:'POST'})}catch{}TICKING=false}
+async function start(){if(!TABS.find(x=>x[0]===tab))tab='overview';shell();show(tab);refreshBadges();clearInterval(BADGE_T);BADGE_T=setInterval(refreshBadges,60000);
+ clearInterval(TICK_T);TICK_T=setInterval(uiTick,60000);setTimeout(uiTick,1500)}
+async function cronSetup(){
+ let r;try{r=await api('GET','/api/cron-info')}catch{return}
+ const m=modal(`<h2>Запуск по расписанию (cron)</h2>
+  <p class="mut" style="margin-top:0">Чтобы рассылка шла круглосуточно, внешний сервис должен раз в минуту открывать одну ссылку. Это бесплатно на cron-job.org.</p>
+  <ol style="padding-left:20px;line-height:1.7;margin:0 0 12px"><li>Откройте <a href="https://console.cron-job.org" target="_blank" rel="noopener">console.cron-job.org</a> и нажмите <b>Create cronjob</b>.</li>
+   <li>В поле <b>URL</b> вставьте ссылку ниже.</li><li><b>Execution schedule</b>: Every 1 minute (каждую минуту).</li><li>Нажмите <b>Save</b>, затем <b>Test run</b>: должен быть ответ 200.</li></ol>
+  <div class="row tight" style="flex-wrap:nowrap"><input id="cu" readonly value="${esc(r.url)}" style="flex:1;min-width:0"><button class="btn" id="cc2">Скопировать</button></div>
+  <div class="item" style="padding:12px 0 4px;border:0"><span><span class="dot ${r.last_cron_ago!=null&&r.last_cron_ago<240?'':'bad'}" id="cd"></span><span id="ct2">${r.last_cron_ago==null?'cron ещё ни разу не вызывался':'последний вызов cron: '+r.last_cron_ago+' сек назад'}</span></span>
+   <span class="btns"><button class="btn sec sm" id="cr">Новый ключ</button><button class="btn sec sm" onclick="this.closest('.modal').remove()">Закрыть</button></span></div>
+  <p class="mut" style="margin:6px 0 0">Ссылка содержит секретный ключ: не показывайте её посторонним. Если она попала не туда, нажмите «Новый ключ» и обновите ссылку в cron-job.org.</p>`);
+ $('#cc2').onclick=async()=>{try{await navigator.clipboard.writeText(r.url)}catch{$('#cu').select();document.execCommand('copy')}$('#cc2').textContent='Скопировано ✓'};
+ $('#cr').onclick=async()=>{if(!confirm('Создать новый ключ? Старая ссылка перестанет работать.'))return;try{r=await api('POST','/api/cron-info/rotate');$('#cu').value=r.url;$('#cc2').textContent='Скопировать';note('Ключ обновлён. Обновите ссылку в cron-job.org.')}catch{}};
+ let n=0;const poll=setInterval(async()=>{if(!m.isConnected||++n>40)return clearInterval(poll);try{const x=await api('GET','/api/cron-info');
+  $('#ct2').textContent=x.last_cron_ago==null?'cron ещё ни разу не вызывался':'последний вызов cron: '+x.last_cron_ago+' сек назад';$('#cd').className='dot '+(x.last_cron_ago!=null&&x.last_cron_ago<240?'':'bad')}catch{}},5000)}
 
 /* ---- палитра команд (Ctrl+K) ---- */
 let PAL=null;
@@ -1850,7 +1936,7 @@ async function campaignsView(){
   <div class="mut">отправлено ${c.sent} · в очереди ${c.pending} · ошибок ${c.failed}${c.skipped?' · пропущено '+c.skipped:''}${c.dupes?' · дублей убрано '+c.dupes:''}${c.recent_skipped?' · уже писали: '+c.recent_skipped:''} · ${c.per_hour||c.per_minute*60}/час · ${c.window_start}–${c.window_end} ч</div>${progBar(c)}
   ${c.status==='scheduled'&&c.start_at?`<div class="mut" style="color:var(--purple)">Старт: ${new Date(c.start_at).toLocaleString('ru',{timeZone:c.tz,dateStyle:'short',timeStyle:'short'})} (${esc(c.tz)})</div>`:''}
   ${c.tested_at?'':'<div class="mut" style="color:var(--warn)">Тест ещё не отправлялся</div>'}
-  ${(c.why||[]).map(w=>`<div class="why">⚠ ${esc(w)}</div>`).join('')}${c.status==='running'&&c.pending&&!(c.why||[]).length&&!c.sent?`<div class="why ok">Всё в порядке: первое сообщение уйдёт в ближайшую минуту. Темп ${c.per_hour||c.per_minute*60} в час.</div>`:''}</div></div>
+  ${(c.why||[]).map(w=>`<div class="why">⚠ ${esc(w)}${/cron/i.test(w)?` <button class="btn sm" style="margin-left:8px" onclick="cronSetup()">Настроить cron</button>`:''}</div>`).join('')}${c.status==='running'&&c.pending&&!(c.why||[]).length&&!c.sent?`<div class="why ok">Всё в порядке: первое сообщение уйдёт в ближайшую минуту. Темп ${c.per_hour||c.per_minute*60} в час.</div>`:''}</div></div>
   <div class="btns"><button class="btn sec sm" onclick="prevC(${c.id})">Предпросмотр</button><button class="btn sec sm" onclick="testC(${c.id},this)">Тест</button>
   ${c.status==='running'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Пауза</button>`
    :c.status==='scheduled'?`<button class="btn sec sm" onclick="st(${c.id},'paused')">Отменить запуск</button>`
@@ -1985,13 +2071,13 @@ async function delA(id){if(confirm('Удалить аккаунт?')){await api(
 async function overviewView(){
  const d=await api('GET','/api/overview');
  const h=new Date().getHours(),hi=h<5?'Доброй ночи':h<12?'Доброе утро':h<18?'Добрый день':'Добрый вечер';
- const tk=d.last_tick_ago,tickOk=tk!=null&&tk<240;
+ const tk=d.last_cron_ago,tickOk=tk!=null&&tk<240;
  const kpi=(ic,t,v,sub)=>`<div class="kpi"><small>${ico(ic)}${t}</small><b data-n="${v}">${v}</b><i>${sub||'&nbsp;'}</i></div>`;
  const byDay={};d.series.forEach(r=>byDay[r.day]=r);const days=[];
  for(let i=13;i>=0;i--){const k=new Date(Date.now()-i*864e5).toLocaleDateString('sv-SE',{timeZone:'Europe/Moscow'});days.push(byDay[k]||{day:k,sent:0,replies:0})}
  const mx=Math.max(1,...days.map(x=>x.sent));
  const running=d.campaigns.filter(c=>c.status==='running').length,active=d.accounts.filter(a=>a.status==='active').length;
- const tkTxt=tk==null?'ещё ни разу':tk<90?tk+' сек назад':Math.round(tk/60)+' мин назад';
+ const tkTxt=tk==null?'не настроен':tk<90?tk+' сек назад':Math.round(tk/60)+' мин назад';
  $('#view').innerHTML=`<div class="hero"><div><span class="eyebrow">Обзор</span><h2>${hi}!</h2><p>${d.today.sent?`Сегодня отправлено ${d.today.sent}, ответили ${d.today.replies}.`:'Сегодня отправок ещё не было.'}${d.needs?` Ответа ждут ${d.needs}.`:''}</p></div>
   <div class="btns"><button class="btn" onclick="gotoNew()">${ico('plus')}Новая рассылка</button><button class="btn sec" onclick="show('chat')">${ico('chat')}Открыть чат</button></div></div>
  <div class="kpis">${kpi('send','Отправлено сегодня',d.today.sent,d.today.failed?d.today.failed+' с ошибкой':'без ошибок')}
@@ -2004,7 +2090,7 @@ async function overviewView(){
   <div class="card"><h2>Рассылки</h2>${d.campaigns.map(c=>`<div class="item" style="display:block"><div class="row tight" style="justify-content:space-between;align-items:center"><div><b>${esc(c.name)}</b> ${pill(c.status)}</div><span class="mut">${c.sent} из ${c.total}${c.failed?' · ошибок '+c.failed:''}</span></div>${progBar(c)}</div>`).join('')||'<p class="mut">Рассылок пока нет. Создайте первую кнопкой выше.</p>'}</div>
  </div><div>
   <div class="card"><h2>Состояние системы</h2><div class="item" style="padding:6px 0"><span><span class="dot ${tickOk?'':'bad'}"></span>Запуск по расписанию (cron)</span><span class="mut">${tkTxt}</span></div>
-   ${tickOk?'':'<p class="mut" style="margin:8px 0 0">Отправка и входящие работают только когда cron-job.org вызывает /api/tick каждую минуту.</p>'}
+   ${tickOk?'':'<p class="mut" style="margin:8px 0 6px">Пока cron не настроен, рассылка и входящие работают только при открытой панели.</p><button class="btn sm" onclick="cronSetup()">Настроить cron</button>'}
    <div class="item" style="padding:6px 0"><span><span class="dot"></span>База данных</span><span class="mut">работает</span></div>
    <div class="item" style="padding:6px 0"><span>Контактов в базе</span><span class="mut">${d.totals.contacts} · исключено ${d.totals.excluded}</span></div>
    <div class="item" style="padding:6px 0"><span>Всего отправлено</span><span class="mut">${d.totals.sent}</span></div></div>
