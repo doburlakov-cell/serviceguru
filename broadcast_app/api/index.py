@@ -444,6 +444,30 @@ async def sync_chats(aid: int, con=Depends(get_db)):
         await release(con, acct_key(aid))
 
 
+@app.post("/api/accounts/{aid}/spamcheck", dependencies=[Depends(auth)])
+async def spamcheck(aid: int, con=Depends(get_db)):
+    """Официальная проверка ограничений аккаунта: спрашиваем @SpamBot и возвращаем его ответ."""
+    acc = await con.fetchrow("select * from accounts where id=$1 and session is not null", aid)
+    if not acc:
+        raise HTTPException(404, "Аккаунт не найден или не авторизован")
+    await lock_account(con, aid)
+    try:
+        async with client_for(acc) as client:
+            await client.send_message("SpamBot", "/start")
+            reply = ""
+            for _ in range(8):
+                await asyncio.sleep(1.5)
+                msgs = await client.get_messages("SpamBot", limit=1)
+                if msgs and not msgs[0].out and msgs[0].message:
+                    reply = msgs[0].message
+                    break
+        low = reply.lower()
+        free = bool(reply) and any(w in low for w in ("no limits", "good news", "нет ограничений", "ограничений нет", "свободен"))
+        return {"reply": reply or "SpamBot не ответил, повторите через минуту", "free": free}
+    finally:
+        await release(con, acct_key(aid))
+
+
 @app.delete("/api/accounts/{aid}", dependencies=[Depends(auth)])
 async def delete_account(aid: int, con=Depends(get_db)):
     await con.execute("delete from accounts where id=$1", aid)
@@ -2197,7 +2221,7 @@ async function contactsView(){
 async function accountsView(){const accs=await api('GET','/api/accounts');
  $('#view').innerHTML=`<div class="card"><h2>Аккаунты Telegram</h2>${accs.map(a=>`<div class="item"><div><b>${esc(a.name)}</b> ${esc(a.phone)} ${pill(a.status)}
  <div class="mut">чатов: ${a.chats}${a.blocked_until?' · пауза до '+new Date(a.blocked_until).toLocaleString('ru'):''}</div></div>
- <div class="btns">${a.status==='code_sent'?`<button class="btn sm" onclick="code(${a.id})">Ввести код</button>`:`<button class="btn sec sm" onclick="sync(${a.id},this)">Синхронизировать чаты</button>`}
+ <div class="btns">${a.status==='code_sent'?`<button class="btn sm" onclick="code(${a.id})">Ввести код</button>`:`<button class="btn sec sm" onclick="spam(${a.id},this)">Проверка на спам</button><button class="btn sec sm" onclick="sync(${a.id},this)">Синхронизировать чаты</button>`}
  <button class="btn dng sm" onclick="delA(${a.id})">Удалить</button></div></div>`).join('')||'<p class="mut">Пока нет аккаунтов</p>'}</div>
  <div class="card"><h2>Добавить аккаунт</h2><div class="row"><div><label style="margin-top:0">Название</label><input id="an"></div><div><label style="margin-top:0">Телефон</label><input id="ap" placeholder="+7..."></div></div>
  <div class="row"><div><label>api_id</label><input id="ai" inputmode="numeric"></div><div><label>api_hash</label><input id="ah"></div></div>
@@ -2205,6 +2229,8 @@ async function accountsView(){const accs=await api('GET','/api/accounts');
  <p class="mut">api_id и api_hash берутся на <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> → API development tools.</p></div>`;
  $('#aa').onclick=async()=>{try{await api('POST','/api/accounts',{name:$('#an').value,phone:$('#ap').value,api_id:+$('#ai').value,api_hash:$('#ah').value});accountsView()}catch{}}}
 async function code(id){const c=prompt('Код из Telegram');if(!c)return;const p=prompt('Пароль 2FA (если нет — оставьте пустым)')||null;try{await api('POST',`/api/accounts/${id}/code`,{code:c,password:p})}catch{}accountsView()}
+async function spam(id,b){b.disabled=true;const t=b.textContent;b.textContent='Проверяем…';try{const r=await api('POST',`/api/accounts/${id}/spamcheck`);
+ modal(`<h2>Ответ @SpamBot</h2><p>${r.free?'<span class="pill ok">Ограничений нет</span>':'<span class="pill bad">Возможны ограничения</span>'}</p><p style="white-space:pre-wrap">${esc(r.reply)}</p><div class="btns"><button class="btn" onclick="this.closest('.modal').remove()">Закрыть</button></div>`)}catch{}finally{b.disabled=false;b.textContent=t}}
 async function sync(id,b){b.disabled=true;b.textContent='Идёт…';try{const r=await api('POST',`/api/accounts/${id}/sync`);note('Чатов: '+r.synced+(r.reads?', новых прочтений: '+r.reads:''))}catch{}accountsView()}
 async function delA(id){if(confirm('Удалить аккаунт?')){await api('DELETE','/api/accounts/'+id);accountsView()}}
 
