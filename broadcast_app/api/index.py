@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
-from telethon.tl.types import (Channel, Chat, InputPeerChannel, InputPeerChat, InputPeerUser, MessageEntityUrl, User)
+from telethon.tl.types import (Channel, Chat, InputPeerChannel, InputPeerChat, InputPeerUser, MessageEntityTextUrl, MessageEntityUrl, User)
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _sso_client import enabled as sso_enabled, install_sso  # единый вход через портал, если заданы PORTAL_URL и SSO_APP_ID
@@ -93,6 +93,8 @@ alter table accounts add column if not exists reads_checked_at timestamptz;
 create index if not exists targets_chat_idx on targets(chat_id);
 alter table targets add column if not exists replied_at timestamptz;
 alter table targets add column if not exists reply_checked_id bigint;
+alter table targets add column if not exists links_expected int;
+alter table targets add column if not exists links_marked int;
 create table if not exists locks(k text primary key, until timestamptz);
 create table if not exists settings(k text primary key, v text);
 create table if not exists account_events(
@@ -109,7 +111,7 @@ create table if not exists conversations(
   unread int default 0, seen_at timestamptz, needs_reply text, needs_since timestamptz, triage_at timestamptz,
   primary key(account_id, chat_id));
 """
-SCHEMA_VERSION = 8   # увеличивайте при любом изменении SCHEMA
+SCHEMA_VERSION = 9   # увеличивайте при любом изменении SCHEMA
 _schema_ready = False
 
 
@@ -278,21 +280,33 @@ def url_entities(text: str) -> list:
     return out
 
 
+class MsgId(int):
+    """id отправленного сообщения + сколько ссылок мы разметили и сколько из них Telegram сохранил."""
+    links: tuple[int, int] = (0, 0)
+
+
+def with_links(msg, text) -> MsgId:
+    expected = len(url_entities(text))
+    ents = getattr(msg, "entities", None) or []
+    marked = sum(1 for e in ents if isinstance(e, (MessageEntityUrl, MessageEntityTextUrl)))
+    out = MsgId(msg.id)
+    out.links = (expected, min(marked, expected) if expected else 0)
+    return out
+
+
 async def deliver(client, peer, text, media):
     """Фото с подписью (если подпись влезает в лимит Telegram) либо фото и текст отдельно.
     Текст уходит как есть (без Markdown), ссылки размечены явно, чтобы были кликабельны.
-    Возвращает id последнего отправленного сообщения (по нему определяем прочтение)."""
+    Возвращает id последнего сообщения (по нему определяем прочтение); у id есть .links: (размечено нами, сохранено Telegram)."""
     if not media:
-        return (await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text))).id
+        return with_links(await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text)), text)
     f = io.BytesIO(bytes(media["data"]))
     f.name = media["filename"] or "photo.jpg"
     if len(text) <= CAPTION_LIMIT:
-        return (await client.send_file(peer, f, caption=text, force_document=False, parse_mode=None,
-                                       formatting_entities=url_entities(text))).id
-    last = await client.send_file(peer, f, force_document=False)
-    if text:
-        last = await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text))
-    return last.id
+        return with_links(await client.send_file(peer, f, caption=text, force_document=False, parse_mode=None,
+                                                 formatting_entities=url_entities(text)), text)
+    await client.send_file(peer, f, force_document=False)
+    return with_links(await client.send_message(peer, text, parse_mode=None, formatting_entities=url_entities(text)), text)
 
 
 async def acquire(con, key, ttl=80):
@@ -871,8 +885,9 @@ async def send_test(con, account_ids, text, media_id):
                         peer = peer_of(row) if row else int(target)
                     else:
                         peer = target
-                    await deliver(client, peer, text.replace("{name}", first_word(r["label"])), media)
-                    results.append({"label": r["label"], "ok": True})
+                    sent_id = await deliver(client, peer, text.replace("{name}", first_word(r["label"])), media)
+                    lk = getattr(sent_id, "links", (0, 0))
+                    results.append({"label": r["label"], "ok": True, "links_expected": lk[0], "links_marked": lk[1]})
                 except Exception as e:  # noqa: BLE001
                     results.append({"label": r["label"], "ok": False, "error": type(e).__name__ + ": " + str(e)[:120]})
                 await asyncio.sleep(2)
@@ -1294,7 +1309,9 @@ count(t.read_at) as reads,
 count(t.replied_at) as replies,
 count(*) filter (where t.status='failed') as failed,
 count(*) filter (where t.status='skipped') as skipped,
-count(*) filter (where t.status in ('pending','sending')) as queued
+count(*) filter (where t.status in ('pending','sending')) as queued,
+coalesce(sum(t.links_expected) filter (where t.status='sent'), 0) as links_expected,
+coalesce(sum(t.links_marked) filter (where t.status='sent'), 0) as links_marked
 """
 AN_MEDIANS = """
 percentile_cont(0.5) within group (order by extract(epoch from (t.read_at - t.sent_at)))
@@ -1420,9 +1437,11 @@ async def send_batch(con, client, aid, c, n, deadline, now):
             await con.execute("insert into account_events(account_id, kind, seconds) values($1,'peer_flood',86400)", aid)
         except Exception as e:  # noqa: BLE001
             status, err = "failed", type(e).__name__
+        lk = getattr(msg_id, "links", None) or (None, None)
         await con.execute(
             "update targets set status=$2::text, error=$3, message_id=$4, "
-            "sent_at=case when $2::text='sent' then now() end where id=$1", t["id"], status, err, msg_id)
+            "sent_at=case when $2::text='sent' then now() end, links_expected=$5, links_marked=$6 where id=$1",
+            t["id"], status, err, msg_id, lk[0], lk[1])
         if status == "sent":
             sent += 1
             await con.execute(
@@ -2086,7 +2105,7 @@ function pickTime(tz,cb){const pad=n=>String(n).padStart(2,'0');const d=new Date
   <div class="btns"><button class="btn" id="sok">Запланировать</button><button class="btn sec" onclick="this.closest('.modal').remove()">Отмена</button></div>`);
  $('#sok').onclick=async()=>{const v=$('#sd').value;if(!v){note('Выберите дату и время',1);return}const b=$('#sok');b.disabled=true;try{await cb(v);m.remove()}catch{b.disabled=false}}}
 function schedC(id,tz){pickTime(tz,async when=>{await api('POST',`/api/campaigns/${id}/schedule`,{start_at:when});note('Запуск запланирован');campaignsView()})}
-function showTest(r){modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>':`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
+function showTest(r){modal(`<h2>Тест с аккаунта «${esc(r.account)}»</h2>${r.results.map(x=>`<div class="item"><b>${esc(x.label)}</b>${x.ok?'<span class="pill ok">доставлено</span>'+(x.links_expected?(x.links_marked>=x.links_expected?' <span class="pill ok">ссылка активна</span>':' <span class="pill bad">Telegram не сохранил ссылку</span>'):''):`<span class="pill bad">${esc(x.error)}</span>`}</div>`).join('')}
  <div class="btns" style="margin-top:14px"><button class="btn" onclick="this.closest('.modal').remove()">Готово</button></div>`)}
 function progBar(c){const t=c.sent+c.failed+c.skipped+c.pending;if(!t)return '';const w=x=>(x/t*100).toFixed(2)+'%';
  return `<div class="prog" title="Отправлено ${c.sent} из ${t}"><i class="s" style="width:${w(c.sent)}"></i><i class="f" style="width:${w(c.failed)}"></i><i class="k" style="width:${w(c.skipped)}"></i></div>`}
@@ -2319,6 +2338,7 @@ async function analyticsView(){
   ${kpi('Пропущено',s.skipped,'исключены из рассылки')}
   ${kpi('До прочтения',dur(s.read_sec),'медиана')}
   ${kpi('До ответа',dur(s.reply_sec),'медиана')}
+  ${s.links_expected?kpi('Ссылки активны',pc(s.links_marked,s.links_expected),s.links_marked+' из '+s.links_expected+' (по данным Telegram)'):''}
   ${kpi('Контактов в базе',c.total,c.excluded+' исключено')}
   ${kpi('Аккаунтов',c.accounts,c.accounts_active+' активны · '+c.accounts_blocked+' на паузе/с ошибкой')}</div>
  <div class="card"><h2>По дням</h2><div class="legend"><span><i style="background:var(--purple)"></i>Доставлено</span><span><i style="background:var(--cyan)"></i>Прочитано</span><span><i style="background:var(--green)"></i>Ответили</span></div>
